@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -163,7 +164,18 @@ class FindMoneyView(QWidget):
         self._station_setup_requirements: tuple[StationFeeRequirement, ...] = ()
         self._price_setup_requirements: tuple[PriceRequirementAssessment, ...] = ()
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("findMoneyScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("findMoneyScrollContent")
+        root = QVBoxLayout(self.scroll_content)
+        self.scroll_area.setWidget(self.scroll_content)
+        outer.addWidget(self.scroll_area)
         title = QLabel("Find Me Money")
         title.setObjectName("pageTitle")
         root.addWidget(title)
@@ -560,6 +572,9 @@ class FindMoneyView(QWidget):
 
     def _build_output_tabs(self, root: QVBoxLayout) -> None:
         self.tabs = QTabWidget()
+        # Keep the result tables and execution detail genuinely usable. The outer
+        # scroll area absorbs the extra height instead of squeezing this region.
+        self.tabs.setMinimumHeight(1_000)
         self.tabs.addTab(self._build_preflight_tab(), "Preflight")
         self.tabs.addTab(self._build_plan_tab(), "Plan")
         self.tabs.addTab(self._build_excluded_tab(), "Excluded / near misses")
@@ -642,22 +657,26 @@ class FindMoneyView(QWidget):
             "Plan reasons, assumptions, unused-resource explanation, and rejection counts."
         )
         layout.addWidget(self.plan_explanation)
-        actions = QSplitter(Qt.Orientation.Vertical)
+        self.action_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.action_splitter.setChildrenCollapsible(False)
+        self.action_splitter.setMinimumHeight(560)
         self.action_table = QTableWidget(0, len(self.ACTION_HEADERS))
         self.action_table.setHorizontalHeaderLabels(self.ACTION_HEADERS)
         self._configure_table(self.action_table, sortable=True)
+        self.action_table.setMinimumHeight(300)
         self.action_table.itemSelectionChanged.connect(self._show_selected_action)
         self.action_detail = QPlainTextEdit()
         self.action_detail.setReadOnly(True)
+        self.action_detail.setMinimumHeight(220)
         self.action_detail.setPlaceholderText(
             "Select a plan action to inspect prices, timestamps, recipe evidence, station fee, "
             "Focus profile, liquidity, cash timing, and warnings."
         )
-        actions.addWidget(self.action_table)
-        actions.addWidget(self.action_detail)
-        actions.setStretchFactor(0, 3)
-        actions.setStretchFactor(1, 2)
-        layout.addWidget(actions, 1)
+        self.action_splitter.addWidget(self.action_table)
+        self.action_splitter.addWidget(self.action_detail)
+        self.action_splitter.setStretchFactor(0, 3)
+        self.action_splitter.setStretchFactor(1, 2)
+        layout.addWidget(self.action_splitter, 1)
         controls = QHBoxLayout()
         self.replan_button = QPushButton("Refresh & Replan from these inputs")
         self.replan_button.setEnabled(False)

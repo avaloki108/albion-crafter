@@ -288,6 +288,33 @@ def test_page_is_idle_until_two_explicit_stages_and_renders_plan_and_history(
     view.close()
 
 
+def test_find_money_page_scrolls_instead_of_compressing_results(qt_app, tmp_path) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+    view.resize(1_050, 600)
+    view.show()
+    qt_app.processEvents()
+
+    scrollbar = view.scroll_area.verticalScrollBar()
+    assert view.scroll_area.widgetResizable()
+    assert view.tabs.minimumHeight() == 1_000
+    assert view.action_splitter.minimumHeight() == 560
+    assert not view.action_splitter.childrenCollapsible()
+    assert view.action_table.minimumHeight() == 300
+    assert view.action_detail.minimumHeight() == 220
+    assert scrollbar.maximum() > 0
+    scrollbar.setValue(scrollbar.maximum())
+    qt_app.processEvents()
+    assert scrollbar.value() == scrollbar.maximum()
+
+    view.close()
+
+
 def test_missing_station_fee_preflight_is_structured_and_blocks_run(qt_app, tmp_path) -> None:
     service, snapshots, preferences, constraints = _stack(tmp_path, with_fee=False)
     recording = RecordingService(service)
