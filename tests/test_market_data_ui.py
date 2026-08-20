@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from inspect import signature
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PySide6.QtWidgets import QApplication, QHeaderView
+
 from albion_crafter.core.provenance import Provenance
+from albion_crafter.database.catalog import CatalogRepository
+from albion_crafter.database.database import (
+    Database,
+    MarketPriceRepository,
+    PriceOverrideRepository,
+    SettingsRepository,
+)
+from albion_crafter.database.v3 import MarketHistoryRepository
 from albion_crafter.market.aodp import BatchFailure
 from albion_crafter.market.history import (
     HistoryFetchResult,
@@ -17,6 +31,24 @@ from albion_crafter.ui.market_data import (
     HistoryRefreshWorker,
     MarketDataView,
 )
+
+
+@pytest.fixture(scope="module")
+def qt_app():
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+def _view(tmp_path) -> MarketDataView:
+    database = Database(tmp_path / "market-data-ui.db")
+    database.initialize()
+    return MarketDataView(
+        MarketPriceRepository(database),
+        PriceOverrideRepository(database),
+        CatalogRepository(database),
+        SettingsRepository(database),
+        MarketHistoryRepository(database),
+    )
 
 
 class RecordingHistoryRepository:
@@ -234,3 +266,50 @@ def test_market_health_counts_each_side_and_constructor_remains_compatible() -> 
     assert "1 future-dated (invalid)" in text
     assert "2 missing" in text
     assert signature(MarketDataView.__init__).parameters["history"].default is None
+
+
+def test_market_table_uses_stable_interactive_column_widths(qt_app, tmp_path) -> None:
+    view = _view(tmp_path)
+    header = view.table.horizontalHeader()
+
+    assert all(
+        header.sectionResizeMode(column) is QHeaderView.ResizeMode.Interactive
+        for column in range(len(view.HEADERS) - 1)
+    )
+
+
+def test_history_completion_does_not_rebuild_current_price_table(
+    qt_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    view = _view(tmp_path)
+    fetched_at = datetime.now(UTC)
+    summary = HistoryRefreshSummary(
+        result=_result(fetched_at=fetched_at),
+        coverage_total=1,
+        success_coverage=0,
+        empty_coverage=1,
+        partial_coverage=0,
+        failed_coverage=0,
+        pruned_intervals=0,
+    )
+    worker = HistoryRefreshWorker(
+        Region.AMERICAS,
+        RecordingHistoryRepository(),  # type: ignore[arg-type]
+        ("T4_A",),
+        ("Bridgewatch",),
+        7,
+    )
+    view._workers.add(worker)
+    monkeypatch.setattr(
+        view,
+        "reload",
+        lambda **_kwargs: pytest.fail("history completion rebuilt the current-price table"),
+    )
+
+    view._history_finished(worker, summary)
+
+    assert worker not in view._workers
+    assert view.history_button.isEnabled()
+    assert "successful-empty" in view.status.text()

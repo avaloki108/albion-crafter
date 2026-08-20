@@ -281,6 +281,7 @@ class MarketDataView(QWidget):
         "Fetched (UTC)",
         "Provenance",
     )
+    COLUMN_WIDTHS = (240, 120, 70, 100, 190, 95, 100, 190, 95, 190, 120)
 
     def __init__(
         self,
@@ -357,7 +358,14 @@ class MarketDataView(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        # Keeping a large, sortable QTableWidget in ResizeToContents mode makes Qt
+        # recalculate every column width while it restores sorting after a refresh.
+        # With a few thousand cached rows that blocks the GUI thread for minutes.
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        for column, width in enumerate(self.COLUMN_WIDTHS):
+            self.table.setColumnWidth(column, width)
         root.addWidget(self.table)
 
         override_group = QGroupBox("User price override (kept separate from AODP history)")
@@ -542,7 +550,8 @@ class MarketDataView(QWidget):
             f"Pruned {summary.pruned_intervals} intervals older than "
             f"{HISTORY_RETENTION_DAYS} days."
         )
-        self.reload(update_status=False)
+        # History refresh does not change the current top-of-book table. Rebuilding
+        # thousands of unrelated rows here used to make a completed request look frozen.
         self.data_changed.emit()
 
     def _history_failed(self, worker: QRunnable, message: str) -> None:
@@ -633,44 +642,50 @@ class MarketDataView(QWidget):
             )
         )
         records = self.repository.list_all(region)
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(records))
-        for row, record in enumerate(records):
-            sell_state = policy.classify(record.sell_price_timestamp)
-            buy_state = policy.classify(record.buy_price_timestamp)
-            values = (
-                SortableItem(record.item_id, record.item_id),
-                SortableItem(record.city, record.city),
-                SortableItem(str(record.quality), record.quality),
-                SortableItem(money(record.sell_price), record.sell_price),
-                self._timestamp_item(record.sell_price_timestamp),
-                SortableItem(
-                    age_text(record.sell_price_timestamp),
-                    self._sort_timestamp(record.sell_price_timestamp),
-                ),
-                SortableItem(money(record.buy_price), record.buy_price),
-                self._timestamp_item(record.buy_price_timestamp),
-                SortableItem(
-                    age_text(record.buy_price_timestamp),
-                    self._sort_timestamp(record.buy_price_timestamp),
-                ),
-                self._timestamp_item(record.fetched_at),
-                SortableItem(record.provenance.value, record.provenance.value),
-            )
-            for column, item in enumerate(values):
-                state = (
-                    sell_state
-                    if column in (3, 4, 5)
-                    else buy_state
-                    if column in (6, 7, 8)
-                    else None
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setSortingEnabled(False)
+            self.table.setRowCount(len(records))
+            for row, record in enumerate(records):
+                sell_state = policy.classify(record.sell_price_timestamp)
+                buy_state = policy.classify(record.buy_price_timestamp)
+                values = (
+                    SortableItem(record.item_id, record.item_id),
+                    SortableItem(record.city, record.city),
+                    SortableItem(str(record.quality), record.quality),
+                    SortableItem(money(record.sell_price), record.sell_price),
+                    self._timestamp_item(record.sell_price_timestamp),
+                    SortableItem(
+                        age_text(record.sell_price_timestamp),
+                        self._sort_timestamp(record.sell_price_timestamp),
+                    ),
+                    SortableItem(money(record.buy_price), record.buy_price),
+                    self._timestamp_item(record.buy_price_timestamp),
+                    SortableItem(
+                        age_text(record.buy_price_timestamp),
+                        self._sort_timestamp(record.buy_price_timestamp),
+                    ),
+                    self._timestamp_item(record.fetched_at),
+                    SortableItem(record.provenance.value, record.provenance.value),
                 )
-                if state in {Freshness.STALE, Freshness.FUTURE}:
-                    item.setForeground(QColor("#ff6b6b"))
-                elif state in (Freshness.AGING, Freshness.UNKNOWN):
-                    item.setForeground(QColor("#ffb454"))
-                self.table.setItem(row, column, item)
-        self.table.setSortingEnabled(True)
+                for column, item in enumerate(values):
+                    state = (
+                        sell_state
+                        if column in (3, 4, 5)
+                        else buy_state
+                        if column in (6, 7, 8)
+                        else None
+                    )
+                    if state in {Freshness.STALE, Freshness.FUTURE}:
+                        item.setForeground(QColor("#ff6b6b"))
+                    elif state in (Freshness.AGING, Freshness.UNKNOWN):
+                        item.setForeground(QColor("#ffb454"))
+                    self.table.setItem(row, column, item)
+            self.table.setSortingEnabled(sorting_enabled)
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.viewport().update()
 
         overrides = self.overrides.list_all(region)
         self.override_table.setRowCount(len(overrides))
