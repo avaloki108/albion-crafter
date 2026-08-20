@@ -190,6 +190,7 @@ def _stack(
         )
     )
     planner = FindMoneyPreflightPlanner(catalog, market, overrides, fees, profiles)
+    snapshot_ids = iter(range(1, 1_000))
     service = FindMoneyService(
         planner,
         market,
@@ -198,7 +199,7 @@ def _stack(
         history,
         snapshots=snapshots,
         clock=lambda: NOW,
-        identifier_factory=lambda _created: "ui-plan",
+        identifier_factory=lambda _created: f"ui-plan-{next(snapshot_ids)}",
     )
     constraints = FindMoneyConstraints(
         available_silver=1_000_000,
@@ -548,4 +549,190 @@ def test_arbitrage_controls_preflight_row_and_execution_detail_are_action_aware(
     assert "Expected unit purchase from minimum sell orders:" in detail
     assert "Expected unit sale:" in detail
     assert "0 crafting · 0 refining · 1 arbitrage" in view.plan_totals.text()
+    view.close()
+
+
+def test_simple_mode_one_click_searches_crafting_refining_and_arbitrage(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(
+        tmp_path,
+        include_refining=True,
+        include_arbitrage=True,
+    )
+    constraints = replace(
+        constraints,
+        action_kinds=frozenset(ActionKind),
+        transport_policy=TransportPolicy.ACKNOWLEDGED_UNCOSTED,
+        arbitrage_source_cities=("Bridgewatch",),
+        arbitrage_destination_cities=("Thetford",),
+    )
+    recording = RecordingService(service)
+    view = FindMoneyView(
+        recording,  # type: ignore[arg-type]
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+
+    assert not view.advanced_toggle.isChecked()
+    assert view.action_inputs.isHidden()
+    assert not view.simple_run_button.isHidden()
+    assert all(
+        checkbox.isChecked()
+        for checkbox in (view.craft_actions, view.refine_actions, view.arbitrage_actions)
+    )
+
+    view.find_money()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert recording.preflight_calls == 1
+    assert recording.execute_calls == 1
+    assert view.preflight is not None
+    assert view.preflight.summary.crafting_recipes == 1
+    assert view.preflight.summary.refining_recipes == 1
+    assert view.preflight.summary.arbitrage_routes > 0
+    assert view.action_table.rowCount() > 0
+    assert view.plan_banner.text().startswith("BEST PLAN")
+    view.close()
+
+
+def test_simple_mode_collects_station_fee_inline_then_continues(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path, with_fee=False)
+    recording = RecordingService(service)
+    view = FindMoneyView(
+        recording,  # type: ignore[arg-type]
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+
+    view.find_money()
+
+    assert recording.preflight_calls == 1
+    assert recording.execute_calls == 0
+    assert view.plan_banner.text() == "SETUP REQUIRED"
+    assert not view.station_setup.isHidden()
+    assert view.station_setup_table.rowCount() == 1
+
+    view.station_setup_table.item(0, 3).setText("500")
+    view.save_station_fees_and_continue()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert recording.preflight_calls == 2
+    assert recording.execute_calls == 1
+    assert view.plan_banner.text().startswith("BEST PLAN")
+    assert view.action_table.rowCount() > 0
+    view.close()
+
+
+def test_simple_mode_distinguishes_missing_prices_and_accepts_inline_overrides(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    with service.market_prices.database.connection() as connection:
+        connection.execute("DELETE FROM market_prices")
+    recording = RecordingService(service)
+    view = FindMoneyView(
+        recording,  # type: ignore[arg-type]
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+
+    view.find_money()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert view.plan_banner.text() == "NOT ENOUGH DATA TO KNOW"
+    assert not view.price_setup.isHidden()
+    assert view.price_setup_table.rowCount() == 2
+    for row in range(view.price_setup_table.rowCount()):
+        item_id = view.price_setup_table.item(row, 0).text()
+        value = "2500" if item_id == "T4_MAIN_SWORD" else "100"
+        view.price_setup_table.item(row, 4).setText(value)
+
+    view.save_price_overrides_and_continue()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert recording.preflight_calls == 2
+    assert recording.execute_calls == 2
+    assert view.plan_banner.text().startswith("BEST PLAN")
+    assert view.action_table.rowCount() > 0
+    view.close()
+
+
+def test_simple_mode_reports_no_profit_only_after_complete_pricing(qt_app, tmp_path) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    service.market_prices.upsert_many((_price("T4_MAIN_SWORD", 100),))
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+
+    view.find_money()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert view.plan_banner.text() == "NO PROFIT FOUND"
+    assert "FULLY-PRICED OPPORTUNITIES" in view.simple_result_summary.text()
+    assert view.price_setup.isHidden()
+    view.close()
+
+
+def test_simple_mode_disables_focus_without_profile_but_still_plans(qt_app, tmp_path) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    service.crafting_profiles.remove()
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=replace(constraints, use_focus=True),
+    )
+
+    assert not view.use_focus.isEnabled()
+    assert not view.use_focus.isChecked()
+    assert not view.focus_setup_button.isHidden()
+
+    view.find_money()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert view.plan_banner.text().startswith("BEST PLAN")
+    assert view.displayed_snapshot is not None
+    assert view.displayed_snapshot.total_focus == 0
+    view.close()
+
+
+def test_simple_counts_follow_item_filter_and_advanced_mode_preserves_controls(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+    before = view.constraints()
+
+    view.advanced_toggle.setChecked(True)
+    qt_app.processEvents()
+    assert not view.action_inputs.isHidden()
+    assert not view.advanced.isHidden()
+    assert not view.advanced_run_controls.isHidden()
+    assert view.constraints() == before
+
+    view.advanced_toggle.setChecked(False)
+    view.item_query.setText("No Such Item")
+    assert view.prepare_preflight()
+    assert view.preflight is not None
+    assert view.preflight.summary.supported_catalog_recipes == 1
+    assert view.preflight.summary.matched_recipes == 0
+    assert "Matched 'No Such Item': 0" in view.simple_result_summary.text()
     view.close()

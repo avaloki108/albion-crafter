@@ -41,7 +41,9 @@ def test_main_window_opens_simple_calculator_and_preserves_scenario_on_evidence_
         SettingsRepository(database),
     )
 
-    assert window.navigation.currentRow() == 2
+    assert window.navigation.currentRow() == 0
+    assert window.pages.currentWidget() is window.find_money
+    window.navigation.setCurrentRow(1)
     assert window.pages.currentWidget() is window.calculator
     assert isinstance(window.calculator._refresh_service, RecipePriceRefreshService)
 

@@ -3,13 +3,15 @@ from datetime import UTC, datetime
 
 import pytest
 
+from albion_crafter.core.stations import StationType, station_type_for_item
 from albion_crafter.data.static_importer import (
+    StaticCatalogParser,
     StaticDataClient,
     StaticDataError,
     StaticDataRelease,
     StaticValidationPolicy,
 )
-from albion_crafter.database.catalog import CatalogRepository
+from albion_crafter.database.catalog import CatalogImport, CatalogRepository
 from albion_crafter.database.database import Database
 
 
@@ -128,6 +130,78 @@ def test_static_import_is_real_schema_aware_cached_and_idempotent(tmp_path) -> N
     assert enchanted.materials[0].item_id == "T4_BAR_LEVEL1@1"
     assert enchanted.item_value == 160
     assert repository.search_recipes("Test Sword", enchantment=1)[0].item_id == "T4_SWORD@1"
+
+
+def test_acid_potion_missing_upstream_item_value_is_not_silently_zeroed(tmp_path) -> None:
+    """Mirror the pinned T5 acid shape: output and rare ingredient omit Item Value."""
+
+    raw = {
+        "items": {
+            "consumableitem": {
+                "@uniquename": "T5_POTION_ACID",
+                "@tier": "5",
+                "@craftingcategory": "potion",
+                "craftingrequirements": {
+                    "@amountcrafted": "10",
+                    "@craftingfocus": "294",
+                    "craftresource": [
+                        {
+                            "@uniquename": "T5_ALCHEMY_RARE_DIREBEAR",
+                            "@count": "1",
+                            "@maxreturnamount": "0",
+                        },
+                        {"@uniquename": "T5_TEASEL", "@count": "4"},
+                        {"@uniquename": "T4_BURDOCK", "@count": "4"},
+                        {"@uniquename": "T4_MILK", "@count": "4"},
+                    ],
+                },
+            },
+            "simpleitem": [
+                {"@uniquename": "T5_ALCHEMY_RARE_DIREBEAR", "@tier": "5"},
+                {"@uniquename": "T5_TEASEL", "@tier": "5", "@itemvalue": "40"},
+                {"@uniquename": "T4_BURDOCK", "@tier": "4", "@itemvalue": "40"},
+                {"@uniquename": "T4_MILK", "@tier": "4", "@itemvalue": "40"},
+            ],
+        }
+    }
+    formatted = [
+        {
+            "UniqueName": "T5_POTION_ACID",
+            "LocalizedNames": {"EN-US": "Acid Potion"},
+        }
+    ]
+    parsed = StaticCatalogParser().parse(
+        json.dumps(raw).encode(),
+        json.dumps(formatted).encode(),
+        source_version="acid-pinned-fixture",
+    )
+
+    acid = next(recipe for recipe in parsed.recipes if recipe.output.item_id == "T5_POTION_ACID")
+    assert acid.item_value is None
+    assert acid.item_value != 0
+    assert acid.output.crafting_category == "potion"
+    assert station_type_for_item(acid.output) is StationType.ALCHEMIST_LAB
+
+    database = Database(tmp_path / "acid.db")
+    database.initialize()
+    repository = CatalogRepository(database)
+    repository.replace_all(
+        parsed.items,
+        parsed.recipes,
+        CatalogImport(
+            "acid-fixture",
+            "memory://acid",
+            "acid-pinned-fixture",
+            None,
+            datetime(2026, 8, 19, tzinfo=UTC),
+            len(parsed.items),
+            len(parsed.recipes),
+        ),
+    )
+    coverage = repository.recipe_coverage()
+    assert coverage.total == 1
+    assert coverage.supported == 0
+    assert coverage.unknown_item_value == 1
 
 
 def test_static_parser_rejects_malformed_json(tmp_path) -> None:

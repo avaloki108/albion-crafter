@@ -206,7 +206,9 @@ class FindMoneyView(QWidget):
         self.premium.setChecked(True)
         self.use_focus.setChecked(False)
         self.item_query = QLineEdit()
-        self.item_query.setPlaceholderText("Optional item search — leave blank to search everything")
+        self.item_query.setPlaceholderText(
+            "Optional item search — leave blank to search everything"
+        )
         self.trust_preset = QComboBox()
         self.trust_preset.addItem("Fast / broad search", TrustPreset.FAST.value)
         self.trust_preset.addItem("Careful", TrustPreset.CAREFUL.value)
@@ -786,6 +788,8 @@ class FindMoneyView(QWidget):
             widget.textChanged.connect(self._mark_preflight_dirty)
 
     def _toggle_advanced(self, visible: bool) -> None:
+        if visible:
+            self._simple_run_requested = False
         self.action_inputs.setVisible(visible)
         self.arbitrage_inputs.setVisible(visible)
         self.core_inputs.setVisible(visible)
@@ -1474,11 +1478,15 @@ class FindMoneyView(QWidget):
             "static_supported_matching_recipes",
             summary.candidate_recipes,
         )
+        query_suffix = (
+            f" {preflight.constraints.item_query!r}"
+            if preflight.constraints.item_query
+            else ""
+        )
         self.simple_result_summary.setText(
             "SEARCH COVERAGE\n"
             f"Supported catalog: {supported:,}\n"
-            f"Matched{f' {preflight.constraints.item_query!r}' if preflight.constraints.item_query else ''}: "
-            f"{matched:,}\n"
+            f"Matched{query_suffix}: {matched:,}\n"
             f"Supported matching recipes: {static_ready:,}\n"
             f"Eligible production routes: {len(preflight.eligible):,}\n"
             f"Eligible arbitrage routes: {len(preflight.arbitrage_routes):,}"
@@ -1588,7 +1596,8 @@ class FindMoneyView(QWidget):
 
     @Slot()
     def _on_thread_finished(self) -> None:
-        if self._thread is not None:
+        sender = self.sender()
+        if sender is self._thread and self._thread is not None:
             self._thread_finished(self._thread)
 
     def _worker_progress(self, worker: FindMoneyWorker, value: PlanningProgress) -> None:

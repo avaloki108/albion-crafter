@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from albion_crafter.core.models import ActionKind
 from albion_crafter.database.catalog import CatalogRepository
 from albion_crafter.database.database import (
     MarketPriceRepository,
@@ -35,7 +36,6 @@ from albion_crafter.market.history_cache import CachedOutputHistoryService
 from albion_crafter.market.models import Region
 from albion_crafter.market.pricing import PriceResolver
 from albion_crafter.market.recipe_refresh import RecipePriceRefreshService
-from albion_crafter.core.models import ActionKind
 from albion_crafter.opportunity.service import OpportunityScannerService
 from albion_crafter.planning.current_refresh import CurrentMarketRefreshExecutor
 from albion_crafter.planning.models import FindMoneyConstraints, TransportPolicy
