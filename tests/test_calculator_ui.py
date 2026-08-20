@@ -659,5 +659,5 @@ def test_unknown_acid_item_value_is_labeled_static_and_not_user_enterable(
     assert "Unsupported static recipe" in view.data_banner.text()
     assert "verified static Item Value" in view.whats_missing.text()
     assert "not user-enterable" in view.whats_missing.text()
-    assert "pinned static source does not provide" in view.result.toPlainText()
+    assert "Pinned upstream data does not provide" in view.summary_hints["final_profit"].text()
     view.close()

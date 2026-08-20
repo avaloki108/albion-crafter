@@ -255,9 +255,7 @@ class MainWindow(QMainWindow):
         self.calculator.station_fee_saved.connect(self._calculator_station_fee_saved)
         self.find_money.focus_setup_requested.connect(lambda: self.navigation.setCurrentRow(4))
         self.find_money.evidence_saved.connect(self._find_money_evidence_saved)
-        self.statusBar().showMessage(
-            "Enter your bankroll and press FIND ME MONEY"
-        )
+        self.statusBar().showMessage("Enter your bankroll and press FIND ME MONEY")
 
     def _find_money_evidence_saved(self) -> None:
         self.market.reload()

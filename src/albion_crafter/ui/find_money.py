@@ -622,9 +622,7 @@ class FindMoneyView(QWidget):
         self.plan_details_toggle.setText("Why this works / Evidence / Advanced details")
         self.plan_details_toggle.setCheckable(True)
         self.plan_details_toggle.setChecked(False)
-        self.plan_details_toggle.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
+        self.plan_details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.plan_details_toggle.setArrowType(Qt.ArrowType.RightArrow)
         self.plan_details_toggle.toggled.connect(self._toggle_plan_details)
         layout.addWidget(self.plan_details_toggle)
@@ -1010,8 +1008,7 @@ class FindMoneyView(QWidget):
         if (
             hours <= 2
             and constraints.history_enabled
-            and constraints.minimum_liquidity.minimum_rank
-            >= MinimumLiquidity.MODERATE.minimum_rank
+            and constraints.minimum_liquidity.minimum_rank >= MinimumLiquidity.MODERATE.minimum_rank
         ):
             return TrustPreset.STRICT
         return TrustPreset.CAREFUL
@@ -1232,9 +1229,7 @@ class FindMoneyView(QWidget):
             self.station_setup_table.setItem(
                 row,
                 3,
-                QTableWidgetItem(
-                    "" if observation is None else f"{observation.displayed_fee:g}"
-                ),
+                QTableWidgetItem("" if observation is None else f"{observation.displayed_fee:g}"),
             )
         self.station_setup_status.setText(
             f"{len(requirements):,} saved station fee"
@@ -1479,9 +1474,7 @@ class FindMoneyView(QWidget):
             summary.candidate_recipes,
         )
         query_suffix = (
-            f" {preflight.constraints.item_query!r}"
-            if preflight.constraints.item_query
-            else ""
+            f" {preflight.constraints.item_query!r}" if preflight.constraints.item_query else ""
         )
         self.simple_result_summary.setText(
             "SEARCH COVERAGE\n"

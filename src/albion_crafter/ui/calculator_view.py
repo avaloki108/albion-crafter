@@ -823,13 +823,13 @@ class CalculatorView(QWidget):
                     f"Price data needed · {missing} required item price"
                     f"{'s are' if missing != 1 else ' is'} missing."
                 )
-            elif result.station_fee is None:
-                message = "Station fee needed · add the exact displayed fee to finish profit."
             elif ReasonCode.UNKNOWN_ITEM_VALUE in reason_codes:
                 message = (
                     "Unsupported static recipe · the pinned upstream data does not provide "
                     "enough verified Item Value to calculate this station cost."
                 )
+            elif station_observation is None:
+                message = "Station fee needed · add the exact displayed fee to finish profit."
             else:
                 message = (
                     f"Estimate only · {issue_count} data or modeling issue"
@@ -842,12 +842,11 @@ class CalculatorView(QWidget):
             missing_lines: list[str] = []
             if missing:
                 missing_lines.append(f"{missing:,} automatic market price(s)")
-            if result.station_fee is None:
+            if station_observation is None:
                 missing_lines.append("the current displayed station fee")
             if ReasonCode.UNKNOWN_ITEM_VALUE in reason_codes:
                 missing_lines.append(
-                    f"verified static Item Value for {recipe.output.item_id} "
-                    "(not user-enterable)"
+                    f"verified static Item Value for {recipe.output.item_id} (not user-enterable)"
                 )
             self.whats_missing.setText(
                 "WHAT'S MISSING · "
@@ -971,10 +970,10 @@ class CalculatorView(QWidget):
         )
         if result.profit is not None:
             profit_text = self._summary_money(result.profit, "Needs calculation data")
-        elif ReasonCode.UNKNOWN_STATION_FEE in reason_codes:
-            profit_text = "Add station fee to finish"
         elif ReasonCode.UNKNOWN_ITEM_VALUE in reason_codes:
             profit_text = "Unsupported static recipe"
+        elif ReasonCode.UNKNOWN_STATION_FEE in reason_codes:
+            profit_text = "Add station fee to finish"
         elif result.gross_material_purchase_cash is None:
             profit_text = "Needs material prices"
         elif result.net_sale_value is None:
