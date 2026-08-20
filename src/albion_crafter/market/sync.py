@@ -44,6 +44,7 @@ ROYAL_SYNC_CITIES: tuple[str, ...] = (
 )
 MARKET_SYNC_CITIES_SETTING = "royal_market_sync_cities"
 MARKET_SYNC_LAST_RESULT_SETTING = "royal_market_sync_last_result"
+MARKET_SYNC_LAST_COMPLETE_SETTING = "royal_market_sync_last_complete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,39 +556,54 @@ class MarketSyncStateRepository:
         self.settings.set(MARKET_SYNC_CITIES_SETTING, list(selected))
 
     def save_result(self, result: RoyalMarketSyncResult) -> None:
-        self.settings.set(
-            MARKET_SYNC_LAST_RESULT_SETTING,
-            {
-                "format_version": 1,
-                "started_at": result.started_at.isoformat(),
-                "completed_at": result.completed_at.isoformat(),
-                "region": result.region.value,
-                "cities": list(result.cities),
-                "item_count": result.item_count,
-                "planned_batches": result.planned_batches,
-                "completed_batches": result.completed_batches,
-                "successful_batches": result.successful_batches,
-                "failed_batches": result.failed_batches,
-                "rows_returned": result.rows_returned,
-                "useful_sides_received": result.useful_sides_received,
-                "sides_updated": result.sides_updated,
-                "missing_sides": result.missing_sides,
-                "observations_le_2h": result.observations_le_2h,
-                "observations_le_4h": result.observations_le_4h,
-                "observations_le_24h": result.observations_le_24h,
-                "observations_older_24h": result.observations_older_24h,
-                "rows_with_no_usable_side": result.rows_with_no_usable_side,
-                "http_attempts": result.http_attempts,
-                "retry_count": result.retry_count,
-                "elapsed_seconds": result.elapsed_seconds,
-                "cancelled": result.cancelled,
-                "status": result.status,
-            },
-        )
+        value = self._serialize_result(result)
+        self.settings.set(MARKET_SYNC_LAST_RESULT_SETTING, value)
+        if result.status == "complete":
+            self.settings.set(MARKET_SYNC_LAST_COMPLETE_SETTING, value)
 
     def last_result(self) -> StoredMarketSyncResult | None:
+        return self._stored_result(MARKET_SYNC_LAST_RESULT_SETTING)
+
+    def last_complete_result(self) -> StoredMarketSyncResult | None:
+        stored = self._stored_result(MARKET_SYNC_LAST_COMPLETE_SETTING)
+        if stored is not None:
+            return stored
+        # Upgrade path for V0.6.2 prerelease settings that only stored the latest attempt.
+        latest = self.last_result()
+        return latest if latest is not None and latest.status == "complete" else None
+
+    @staticmethod
+    def _serialize_result(result: RoyalMarketSyncResult) -> dict[str, object]:
+        return {
+            "format_version": 1,
+            "started_at": result.started_at.isoformat(),
+            "completed_at": result.completed_at.isoformat(),
+            "region": result.region.value,
+            "cities": list(result.cities),
+            "item_count": result.item_count,
+            "planned_batches": result.planned_batches,
+            "completed_batches": result.completed_batches,
+            "successful_batches": result.successful_batches,
+            "failed_batches": result.failed_batches,
+            "rows_returned": result.rows_returned,
+            "useful_sides_received": result.useful_sides_received,
+            "sides_updated": result.sides_updated,
+            "missing_sides": result.missing_sides,
+            "observations_le_2h": result.observations_le_2h,
+            "observations_le_4h": result.observations_le_4h,
+            "observations_le_24h": result.observations_le_24h,
+            "observations_older_24h": result.observations_older_24h,
+            "rows_with_no_usable_side": result.rows_with_no_usable_side,
+            "http_attempts": result.http_attempts,
+            "retry_count": result.retry_count,
+            "elapsed_seconds": result.elapsed_seconds,
+            "cancelled": result.cancelled,
+            "status": result.status,
+        }
+
+    def _stored_result(self, key: str) -> StoredMarketSyncResult | None:
         try:
-            raw = self.settings.get(MARKET_SYNC_LAST_RESULT_SETTING)
+            raw = self.settings.get(key)
         except (TypeError, ValueError):
             return None
         if not isinstance(raw, dict):

@@ -15,12 +15,18 @@ from albion_crafter.database.database import (
     PriceOverrideRepository,
     SettingsRepository,
 )
-from albion_crafter.market.aodp import SAFE_AODP_URL_LENGTH, AODPClient, plan_price_requests
+from albion_crafter.market.aodp import (
+    SAFE_AODP_URL_LENGTH,
+    AODPClient,
+    BatchFailure,
+    plan_price_requests,
+)
 from albion_crafter.market.coverage import MarketCoverageService
 from albion_crafter.market.models import MarketPrice, MarketSide, Region, UserPriceOverride
 from albion_crafter.market.sync import (
     DEFAULT_ROYAL_SYNC_CITIES,
     MarketSyncStateRepository,
+    RoyalMarketSyncResult,
     RoyalMarketSyncService,
     RoyalMarketUniverseService,
 )
@@ -503,6 +509,7 @@ def test_sync_metadata_and_city_preferences_persist_without_touching_overrides(t
     assert stored is not None
     assert stored.item_count == 4
     assert stored.status == "complete"
+    assert state.last_complete_result() == stored
     saved_override = overrides.get(
         "T4_MAIN_SWORD",
         "Bridgewatch",
@@ -512,3 +519,53 @@ def test_sync_metadata_and_city_preferences_persist_without_touching_overrides(t
     )
     assert saved_override is not None
     assert saved_override.price == 999
+
+
+def test_partial_sync_does_not_replace_last_completed_full_sync(tmp_path) -> None:
+    database = _database(tmp_path)
+    state = MarketSyncStateRepository(SettingsRepository(database))
+    common = {
+        "started_at": NOW - timedelta(minutes=1),
+        "completed_at": NOW,
+        "region": Region.AMERICAS,
+        "cities": ("Bridgewatch",),
+        "item_ids": ("T4_MAIN_SWORD",),
+        "total_catalog_items": 1,
+        "supported_output_items": 1,
+        "required_ingredient_items": 0,
+        "planned_batches": 1,
+        "completed_batches": 1,
+        "successful_batches": 1,
+        "record_failures": (),
+        "cancelled_batches": 0,
+        "rows_returned": 1,
+        "useful_sides_received": 2,
+        "sides_updated": 2,
+        "missing_sides": 0,
+        "observations_le_2h": 2,
+        "observations_le_4h": 2,
+        "observations_le_24h": 2,
+        "observations_older_24h": 0,
+        "rows_with_no_usable_side": 0,
+        "http_attempts": 1,
+        "retry_count": 0,
+        "elapsed_seconds": 1.0,
+        "oldest_observation": NOW,
+        "newest_observation": NOW,
+        "per_city_rows": (("Bridgewatch", 1),),
+        "max_url_bytes": 200,
+    }
+    complete = RoyalMarketSyncResult(failures=(), cancelled=False, **common)
+    state.save_result(complete)
+
+    partial = RoyalMarketSyncResult(
+        failures=(BatchFailure(1, ("T4_MAIN_SWORD",), "rate limited"),),
+        cancelled=False,
+        **{**common, "successful_batches": 0},
+    )
+    state.save_result(partial)
+
+    assert state.last_result() is not None
+    assert state.last_result().status == "failed"
+    assert state.last_complete_result() is not None
+    assert state.last_complete_result().status == "complete"

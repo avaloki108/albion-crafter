@@ -1180,19 +1180,27 @@ class MarketDataView(QWidget):
             f"{universe.required_ingredient_items:,} required ingredient IDs "
             f"({universe.total_catalog_items:,} total catalog records audited)."
         )
-        last = self.sync_state.last_result()
-        if last is None:
+        last_complete = self.sync_state.last_complete_result()
+        last_attempt = self.sync_state.last_result()
+        if last_complete is None:
             self.sync_last_completed.setText("Never")
+        else:
+            self.sync_last_completed.setText(
+                f"{last_complete.completed_at.isoformat()} · {last_complete.item_count:,} items · "
+                f"{len(last_complete.cities)} cities"
+            )
+        if last_attempt is None:
             self.sync_last_result.setText(
                 "No full sync has run. Startup stays offline; press REFRESH ROYAL MARKETS when "
                 "you want a sync."
             )
         else:
-            self.sync_last_completed.setText(last.completed_at.isoformat())
             self.sync_last_result.setText(
-                f"{last.status} · {last.item_count:,} items · {len(last.cities)} cities · "
-                f"{last.successful_batches:,}/"
-                f"{last.planned_batches:,} batches · {last.sides_updated:,} sides updated."
+                f"{last_attempt.status} at {last_attempt.completed_at.isoformat()} · "
+                f"{last_attempt.item_count:,} items · {len(last_attempt.cities)} cities · "
+                f"{last_attempt.successful_batches:,}/"
+                f"{last_attempt.planned_batches:,} batches · "
+                f"{last_attempt.sides_updated:,} sides updated."
             )
         if not cities or not universe.item_ids:
             self.coverage_summary.setText(
