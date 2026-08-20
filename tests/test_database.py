@@ -135,6 +135,58 @@ def test_production_cache_rejects_demo_and_test_fixture_prices(tmp_path) -> None
     assert repository.count() == 0
 
 
+def test_market_display_query_is_region_scoped_bounded_and_prioritizes_prices(tmp_path) -> None:
+    database = Database(tmp_path / "market-display.db")
+    database.initialize()
+    repository = MarketPriceRepository(database)
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 1, 2, tzinfo=UTC)
+    repository.upsert_many(
+        [
+            MarketPrice(
+                "PRICED",
+                "Bridgewatch",
+                1,
+                Region.AMERICAS,
+                100,
+                older,
+                None,
+                None,
+                older,
+            ),
+            MarketPrice(
+                "EMPTY",
+                "Bridgewatch",
+                1,
+                Region.AMERICAS,
+                None,
+                None,
+                None,
+                None,
+                newer,
+            ),
+            MarketPrice(
+                "EUROPE",
+                "Bridgewatch",
+                1,
+                Region.EUROPE,
+                200,
+                newer,
+                None,
+                None,
+                newer,
+            ),
+        ]
+    )
+
+    assert repository.count(Region.AMERICAS) == 2
+    assert repository.count(Region.EUROPE) == 1
+    assert [row.item_id for row in repository.list_for_display(Region.AMERICAS, limit=1)] == [
+        "PRICED"
+    ]
+    assert repository.list_for_display(Region.AMERICAS, limit=0) == []
+
+
 def test_legacy_migration_drops_samples_and_keeps_only_aodp(tmp_path) -> None:
     path = tmp_path / "legacy.db"
     with closing(sqlite3.connect(path)) as connection:

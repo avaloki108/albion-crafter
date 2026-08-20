@@ -418,6 +418,38 @@ def test_explicit_refresh_uses_sparse_recipe_request_and_reports_result_truthful
     view.close()
 
 
+def test_successful_refresh_explains_when_aodp_has_no_selected_order(
+    qt_app,
+    tmp_path,
+) -> None:
+    stack = _stack(tmp_path)
+    missing_requirement = SimpleNamespace(
+        item_id=stack.recipe.output.item_id,
+        side=MarketSide.SELL_ORDER,
+        city="Bridgewatch",
+    )
+    result = _refresh_result(
+        complete=False,
+        partial=True,
+        batches_succeeded=1,
+        batches_failed=0,
+        available=1,
+        missing=1,
+    )
+    result.availability[-1].requirement = missing_requirement
+    refresh = RecordingRefreshService(result)
+    view = stack.view(refresh)
+
+    view.refresh_required_prices()
+    _wait_until(qt_app, lambda: not view._workers)
+
+    assert "AODP check succeeded" in view.refresh_status.text()
+    assert "no usable order was reported" in view.refresh_status.text()
+    assert stack.recipe.output.item_id in view.refresh_status.text()
+    assert "Refreshing again cannot create a market order" in view.refresh_status.text()
+    view.close()
+
+
 def test_refresh_exception_is_visible_and_does_not_emit_prices_refreshed(
     qt_app,
     tmp_path,

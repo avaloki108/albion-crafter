@@ -60,6 +60,17 @@ application's 3,900-byte safety limit and per-operation batch count. Execution i
 bounded retry for transient failures. Cancellation is checked between batches/retries. Successful
 batches persist independently, and newer missing/older sides cannot overwrite a useful side.
 
+At application startup, and on **Refresh ALL catalog prices**, the app ignores manual ID fields
+and checks every canonical item in the active static catalog at Normal quality across all supported
+cities. The operation computes its exact request-plan bound, reports per-batch progress, remains
+cancellable, and persists each successful batch. The Market Data table renders only a useful
+bounded slice of the potentially much larger cache.
+
+A successful current-price request can still return an empty sell or buy side. That means AODP has
+no player-reported top-of-book observation for that exact item/city/quality; it is not zero and the
+app does not invent a price. Marketplace refresh also cannot provide upstream static Item Value,
+the exact station fee displayed in the Albion client, or a player-specific Focus profile.
+
 Find Me Money preflight computes exact sparse requirements before HTTP. Arbitrage requests source
 minimum sell and either destination minimum sell (Sell Order) or maximum buy (Instant Sale).
 Repeated market keys across routes are de-duplicated. Trusted exact-side user overrides live in a

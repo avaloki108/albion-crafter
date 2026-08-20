@@ -9,8 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QHeaderView
 
+from albion_crafter.core.models import Item
 from albion_crafter.core.provenance import Provenance
-from albion_crafter.database.catalog import CatalogRepository
+from albion_crafter.data.cities import CITIES
+from albion_crafter.database.catalog import CatalogImport, CatalogItem, CatalogRepository
 from albion_crafter.database.database import (
     Database,
     MarketPriceRepository,
@@ -18,7 +20,12 @@ from albion_crafter.database.database import (
     SettingsRepository,
 )
 from albion_crafter.database.v3 import MarketHistoryRepository
-from albion_crafter.market.aodp import BatchFailure
+from albion_crafter.market.aodp import (
+    BatchFailure,
+    BatchFetchResult,
+    BatchProgress,
+    plan_price_requests,
+)
 from albion_crafter.market.history import (
     HistoryFetchResult,
     HistoryRecordFailure,
@@ -28,9 +35,11 @@ from albion_crafter.market.history import (
 from albion_crafter.market.models import FreshnessPolicy, MarketPrice, Region
 from albion_crafter.ui.market_data import (
     HISTORY_RETENTION_DAYS,
+    MAX_MARKET_TABLE_ROWS,
     HistoryRefreshSummary,
     HistoryRefreshWorker,
     MarketDataView,
+    MarketRefreshWorker,
 )
 
 
@@ -49,6 +58,32 @@ def _view(tmp_path) -> MarketDataView:
         CatalogRepository(database),
         SettingsRepository(database),
         MarketHistoryRepository(database),
+    )
+
+
+def _seed_catalog(repository: CatalogRepository, item_ids: tuple[str, ...]) -> None:
+    now = datetime.now(UTC)
+    repository.replace_all(
+        [
+            CatalogItem(
+                Item(item_id, item_id, 4, max_quality=1),
+                1,
+                False,
+                Provenance.STATIC_GAME_DATA,
+                "test",
+            )
+            for item_id in item_ids
+        ],
+        [],
+        CatalogImport(
+            "test",
+            "https://example.invalid",
+            "test",
+            None,
+            now,
+            len(item_ids),
+            0,
+        ),
     )
 
 
@@ -174,7 +209,9 @@ def test_history_worker_is_explicit_bounded_and_prunes_retention() -> None:
             cities,
             qualities,
             time_scale,
+            is_cancelled,
         ) -> HistoryFetchResult:
+            assert not is_cancelled()
             calls.append((item_ids, start_date, end_date, cities, qualities, time_scale))
             return HistoryFetchResult(
                 intervals=(),
@@ -314,3 +351,204 @@ def test_history_completion_does_not_rebuild_current_price_table(
     assert worker not in view._workers
     assert view.history_button.isEnabled()
     assert "successful-empty" in view.status.text()
+
+
+def test_current_refresh_status_distinguishes_successful_empty_order_rows() -> None:
+    now = datetime.now(UTC)
+    result = BatchFetchResult(
+        records=(
+            MarketPrice(
+                "T4_EMPTY",
+                "Bridgewatch",
+                1,
+                Region.AMERICAS,
+                None,
+                None,
+                None,
+                None,
+                now,
+            ),
+            MarketPrice(
+                "T4_PRICED",
+                "Bridgewatch",
+                1,
+                Region.AMERICAS,
+                100,
+                now,
+                90,
+                now,
+                now,
+            ),
+        ),
+        failures=(),
+        batch_count=1,
+        items_requested=2,
+        successful_batches=1,
+        elapsed_seconds=0.25,
+    )
+
+    text = MarketDataView._current_refresh_status(result)
+
+    assert "1 sell-order prices and 1 buy-order prices" in text
+    assert "1 returned item/city rows had no reported sell or buy order" in text
+    assert "Fetched (UTC) means AODP was checked" in text
+
+
+def test_full_catalog_refresh_ignores_manual_ids_and_starts_bounded_worker(
+    qt_app,
+    tmp_path,
+) -> None:
+    view = _view(tmp_path)
+    _seed_catalog(view.catalog, ("T4_B", "T4_A"))
+
+    class RecordingPool:
+        worker = None
+
+        def start(self, worker) -> None:
+            self.worker = worker
+
+    pool = RecordingPool()
+    view.thread_pool = pool  # type: ignore[assignment]
+    view.requested_items.setText("IGNORED_ID")
+
+    view.refresh_all_from_network()
+
+    assert isinstance(pool.worker, MarketRefreshWorker)
+    assert pool.worker.item_ids == ("T4_A", "T4_B")
+    assert "complete active catalog" in view.status.text()
+    assert not view.refresh_button.isEnabled()
+    assert not view.full_refresh_button.isEnabled()
+    view.shutdown()
+
+
+def test_startup_schedules_exactly_one_full_catalog_refresh(qt_app, tmp_path) -> None:
+    database = Database(tmp_path / "startup-market-data-ui.db")
+    database.initialize()
+    catalog = CatalogRepository(database)
+    _seed_catalog(catalog, ("T4_A", "T4_B"))
+    view = MarketDataView(
+        MarketPriceRepository(database),
+        PriceOverrideRepository(database),
+        catalog,
+        SettingsRepository(database),
+        MarketHistoryRepository(database),
+        auto_refresh_on_startup=True,
+    )
+
+    class RecordingPool:
+        def __init__(self) -> None:
+            self.workers = []
+
+        def start(self, worker) -> None:
+            self.workers.append(worker)
+
+    pool = RecordingPool()
+    view.thread_pool = pool  # type: ignore[assignment]
+    qt_app.processEvents()
+    qt_app.processEvents()
+
+    assert len(pool.workers) == 1
+    assert isinstance(pool.workers[0], MarketRefreshWorker)
+    assert pool.workers[0].item_ids == ("T4_A", "T4_B")
+    assert "Automatic startup refresh" in view.status.text()
+    view.shutdown()
+
+
+def test_catalog_worker_uses_exact_plan_bound_beyond_manual_client_cap(tmp_path) -> None:
+    database = Database(tmp_path / "large-market-worker.db")
+    database.initialize()
+    repository = MarketPriceRepository(database)
+    item_ids = tuple(f"ITEM_{index:04d}" for index in range(2_601))
+    expected_batches = plan_price_requests(
+        item_ids,
+        region=Region.AMERICAS,
+        cities=CITIES,
+        qualities=(1,),
+    ).batch_count
+    factory_calls = []
+
+    class EmptyClient:
+        def fetch_prices_batched(
+            self,
+            requested,
+            *,
+            cities,
+            qualities,
+            is_cancelled,
+            on_batch_success,
+            on_progress,
+        ) -> BatchFetchResult:
+            assert requested == item_ids
+            assert cities
+            assert qualities == (1,)
+            assert not is_cancelled()
+            on_batch_success(())
+            on_progress(
+                BatchProgress(
+                    1,
+                    expected_batches,
+                    requested[:100],
+                    True,
+                    0,
+                    1,
+                    0,
+                )
+            )
+            return BatchFetchResult(
+                (),
+                (),
+                expected_batches,
+                items_requested=len(requested),
+                successful_batches=expected_batches,
+            )
+
+    def client_factory(region, *, max_batches):
+        factory_calls.append((region, max_batches))
+        return EmptyClient()
+
+    worker = MarketRefreshWorker(
+        Region.AMERICAS,
+        repository,
+        item_ids,
+        client_factory=client_factory,  # type: ignore[arg-type]
+    )
+    progress = []
+    results = []
+    errors = []
+    worker.signals.progress.connect(progress.append)
+    worker.signals.detailed.connect(results.append)
+    worker.signals.error.connect(errors.append)
+
+    worker.run()
+
+    assert expected_batches > 25
+    assert factory_calls == [(Region.AMERICAS, expected_batches)]
+    assert len(progress) == 1
+    assert len(results) == 1
+    assert not errors
+
+
+def test_market_table_caps_rendered_rows_after_full_cache_growth(qt_app, tmp_path) -> None:
+    view = _view(tmp_path)
+    now = datetime.now(UTC)
+    view.repository.upsert_many(
+        [
+            MarketPrice(
+                f"ITEM_{index:04d}",
+                "Bridgewatch",
+                1,
+                Region.AMERICAS,
+                100 + index,
+                now,
+                None,
+                None,
+                now,
+            )
+            for index in range(MAX_MARKET_TABLE_ROWS + 5)
+        ]
+    )
+
+    view.reload()
+
+    assert view.table.rowCount() == MAX_MARKET_TABLE_ROWS
+    assert f"from {MAX_MARKET_TABLE_ROWS + 5:,} cached rows" in view.status.text()

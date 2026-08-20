@@ -1137,12 +1137,23 @@ class CalculatorView(QWidget):
                 f"{updated:,} updated and {retained:,} retained. Totals recalculated."
             )
         elif result.is_partial:
-            text = (
-                f"Refresh partial: {available:,}/{requested:,} required prices available; "
-                f"{result.selected_sides_missing:,} still missing; "
-                f"{result.batches_failed:,} request batches failed. Successful rows were saved "
-                "and prior cache rows were preserved."
-            )
+            if result.batches_failed == 0 and not result.record_failures:
+                unavailable = self._unavailable_refresh_requirements(result)
+                text = (
+                    f"AODP check succeeded: {available:,}/{requested:,} required prices are "
+                    f"available; {result.selected_sides_missing:,} still unavailable because "
+                    "no usable order was reported"
+                    + (f" for {unavailable}" if unavailable else "")
+                    + ". Refreshing again cannot create a market order; change the selected "
+                    "city/item or enter a current observed price in Market Data."
+                )
+            else:
+                text = (
+                    f"Refresh partial: {available:,}/{requested:,} required prices available; "
+                    f"{result.selected_sides_missing:,} still missing; "
+                    f"{result.batches_failed:,} request batches failed. Successful rows were "
+                    "saved and prior cache rows were preserved."
+                )
         else:
             text = (
                 f"Refresh did not complete: {available:,}/{requested:,} required prices are "
@@ -1154,6 +1165,21 @@ class CalculatorView(QWidget):
         self.refresh_status.setText(text)
         if result.batches_succeeded:
             self.prices_refreshed.emit()
+
+    @staticmethod
+    def _unavailable_refresh_requirements(result: RecipePriceRefreshResult) -> str:
+        values: list[str] = []
+        for availability in result.availability:
+            if availability.status is not RecipePriceAvailabilityStatus.MISSING:
+                continue
+            requirement = getattr(availability, "requirement", None)
+            if requirement is None:
+                continue
+            values.append(
+                f"{requirement.item_id} {requirement.side.value.replace('_', ' ')} "
+                f"in {requirement.city}"
+            )
+        return ", ".join(values)
 
     def _refresh_request_matches_current(self, request: RecipePriceRefreshRequest) -> bool:
         recipe = self._current_recipe

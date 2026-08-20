@@ -838,6 +838,28 @@ class MarketPriceRepository:
                 ).fetchall()
         return [self._to_model(row) for row in rows]
 
+    def list_for_display(self, region: Region, *, limit: int = 1_000) -> list[MarketPrice]:
+        """Load a useful bounded slice for the GUI rather than hydrating the full cache."""
+
+        if limit < 1:
+            return []
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM market_prices
+                WHERE region = ?
+                ORDER BY
+                    (sell_price IS NULL AND buy_price IS NULL),
+                    fetched_at DESC,
+                    item_id,
+                    city,
+                    quality
+                LIMIT ?
+                """,
+                (region.value, limit),
+            ).fetchall()
+        return [self._to_model(row) for row in rows]
+
     def list_for_scan(
         self,
         region: Region,
@@ -890,9 +912,16 @@ class MarketPriceRepository:
                 )
         return [self._to_model(row) for row in rows]
 
-    def count(self) -> int:
+    def count(self, region: Region | None = None) -> int:
         with self.database.connection() as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM market_prices").fetchone()[0])
+            if region is None:
+                row = connection.execute("SELECT COUNT(*) FROM market_prices").fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM market_prices WHERE region = ?",
+                    (region.value,),
+                ).fetchone()
+        return int(row[0])
 
     @staticmethod
     def _to_model(row: sqlite3.Row) -> MarketPrice:

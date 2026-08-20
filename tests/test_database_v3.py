@@ -302,5 +302,6 @@ def test_catalog_list_recipes_bulk_hydrates_in_two_queries(tmp_path, monkeypatch
         return connection
 
     monkeypatch.setattr(database, "_open_connection", open_traced)
+    assert repository.list_item_ids() == ("T4_BAR", "T4_MAIN_SWORD")
     assert repository.list_recipes(tier_min=4, tier_max=4, categories=("weapons",)) == [recipe]
     assert len([value for value in statements if value.lstrip().upper().startswith("WITH")]) == 2

@@ -98,6 +98,8 @@ class MainWindow(QMainWindow):
         snapshot_repository: PlanSnapshotRepository | None = None,
         preferences_repository: FindMoneyPreferencesRepository | None = None,
         find_money_service_factory: ServiceFactory | None = None,
+        *,
+        auto_refresh_market_on_startup: bool = False,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Albion Crafter")
@@ -224,6 +226,7 @@ class MainWindow(QMainWindow):
             catalog_repository,
             settings_repository,
             history_repository,
+            auto_refresh_on_startup=auto_refresh_market_on_startup,
         )
         self.settings = SettingsView(
             settings_repository,
@@ -298,6 +301,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
         # Child widgets are normally hidden, not closed, when their top-level
-        # window exits. Explicitly detach the Calculator's worker callbacks.
+        # window exits. Explicitly cancel network work and detach callbacks.
+        self.market.shutdown()
         self.calculator.shutdown()
         super().closeEvent(event)

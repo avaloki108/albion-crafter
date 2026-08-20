@@ -81,12 +81,21 @@ def test_main_window_opens_simple_calculator_and_preserves_scenario_on_evidence_
     assert window.settings.station_fee_table.rowCount() == before + 1
 
     shutdown_calls = []
+    market_shutdown_calls = []
     original_shutdown = window.calculator.shutdown
+    original_market_shutdown = window.market.shutdown
 
     def record_shutdown() -> None:
         shutdown_calls.append(True)
         original_shutdown()
 
     window.calculator.shutdown = record_shutdown  # type: ignore[method-assign]
+
+    def record_market_shutdown() -> None:
+        market_shutdown_calls.append(True)
+        original_market_shutdown()
+
+    window.market.shutdown = record_market_shutdown  # type: ignore[method-assign]
     window.close()
     assert shutdown_calls == [True]
+    assert market_shutdown_calls == [True]

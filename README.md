@@ -15,7 +15,9 @@ refines, or places market orders.
 The application opens on the normal player workflow: enter bankroll, choose a home city, and
 press **FIND ME MONEY**. One explicit action performs the network-free preflight and then the
 existing sparse refresh, Craft/Refine/Arbitrage evaluation, shared-capacity optimization,
-validation, and immutable-snapshot pipeline. Startup remains offline.
+validation, and immutable-snapshot pipeline. On each app launch, a separate background task checks
+every active-catalog item at Normal quality across all supported cities and persists each
+successful AODP batch without blocking the UI.
 
 Simple Mode searches every action kind enabled by the saved V0.6 controls. It asks inline only
 for genuinely manual blockers: current displayed station fees or required Albion prices that
@@ -135,9 +137,11 @@ uv run albion-crafter-update-data
 uv run albion-crafter
 ```
 
-Startup remains offline. Static data refresh explicitly downloads and atomically imports the
-maintained [`ao-data/ao-bin-dumps`](https://github.com/ao-data/ao-bin-dumps) release. To isolate
-local state:
+Startup automatically refreshes the complete active catalog's Normal-quality current prices from
+AODP. The same operation is available as **Refresh ALL catalog prices** on Market Data and ignores
+the manual ID fields. If no static catalog exists, startup first downloads and atomically imports
+the maintained [`ao-data/ao-bin-dumps`](https://github.com/ao-data/ao-bin-dumps) release. To
+isolate local state:
 
 ```bash
 ALBION_CRAFTER_DATA_DIR=/tmp/albion-crafter-dev uv run albion-crafter
@@ -174,7 +178,7 @@ src/albion_crafter/
 ├── opportunity/  legacy independent Craft Scanner
 ├── planning/     three-action preflight, multi-capacity optimizer, validation, exports
 ├── ui/           calculator, unified planner, profile/settings, cancellable workers
-└── main.py       dependency composition and offline startup
+└── main.py       dependency composition and background market startup
 ```
 
 See [Find Me Money](docs/FIND_ME_MONEY.md), [Mechanics](docs/MECHANICS.md),

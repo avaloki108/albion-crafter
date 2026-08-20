@@ -187,8 +187,8 @@ class FindMoneyView(QWidget):
         intro = QLabel(
             "Enter your bankroll, choose a home city, and press FIND ME MONEY. The app checks "
             "crafting, refining, and configured outer-Royal arbitrage, refreshes only the market "
-            "data it needs, and shows the best defensible plan. No network request starts until "
-            "you press the button."
+            "data the plan still needs, and shows the best defensible plan. A separate "
+            "full-catalog current-price refresh runs in the background when the app starts."
         )
         intro.setWordWrap(True)
         intro.setObjectName("muted")

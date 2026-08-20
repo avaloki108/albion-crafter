@@ -128,7 +128,10 @@ def create_application() -> tuple[QApplication, MainWindow]:
         snapshot_repository,
         preferences_repository,
         find_money_service_factory,
+        auto_refresh_market_on_startup=os.environ.get("ALBION_CRAFTER_SMOKE_TEST") != "1",
     )
+    app.aboutToQuit.connect(window.market.shutdown)
+    app.aboutToQuit.connect(window.calculator.shutdown)
     return app, window
 
 

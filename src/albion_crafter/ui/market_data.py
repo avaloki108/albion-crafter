@@ -4,9 +4,10 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from threading import Event
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -33,7 +34,12 @@ from albion_crafter.database.database import (
     default_data_directory,
 )
 from albion_crafter.database.v3 import HistoryCoverage, MarketHistoryRepository
-from albion_crafter.market.aodp import AODPClient, BatchFetchResult
+from albion_crafter.market.aodp import (
+    AODPClient,
+    BatchFetchResult,
+    BatchProgress,
+    plan_price_requests,
+)
 from albion_crafter.market.cache import CachedMarketService
 from albion_crafter.market.history import (
     AODPHistoryClient,
@@ -57,6 +63,7 @@ MAX_HISTORY_ITEM_IDS = 100
 MAX_HISTORY_CITIES = 3
 MAX_HISTORY_WINDOW_DAYS = 30
 HISTORY_RETENTION_DAYS = 30
+MAX_MARKET_TABLE_ROWS = 1_000
 
 
 def _normalized_city(value: str) -> str:
@@ -77,6 +84,7 @@ class HistoryRefreshSummary:
 class MarketWorkerSignals(QObject):
     finished = Signal(int, int, int)
     detailed = Signal(object)
+    progress = Signal(object)
     error = Signal(str)
 
 
@@ -86,18 +94,40 @@ class MarketRefreshWorker(QRunnable):
         region: Region,
         repository: MarketPriceRepository,
         item_ids: tuple[str, ...],
+        *,
+        client_factory: Callable[..., AODPClient] = AODPClient,
     ) -> None:
         super().__init__()
         self.region = region
         self.repository = repository
         self.item_ids = item_ids
+        self.client_factory = client_factory
         self.signals = MarketWorkerSignals()
+        self._cancelled = Event()
+
+    def cancel(self) -> None:
+        """Stop before the next bounded request; already saved batches remain cached."""
+
+        self._cancelled.set()
 
     @Slot()
     def run(self) -> None:
         try:
-            service = CachedMarketService(AODPClient(self.region), self.repository)
-            result = service.refresh(self.item_ids, cities=CITIES, qualities=(1,))
+            plan = plan_price_requests(
+                self.item_ids,
+                region=self.region,
+                cities=CITIES,
+                qualities=(1,),
+            )
+            client = self.client_factory(self.region, max_batches=plan.batch_count)
+            service = CachedMarketService(client, self.repository)
+            result = service.refresh(
+                self.item_ids,
+                cities=CITIES,
+                qualities=(1,),
+                is_cancelled=self._cancelled.is_set,
+                on_progress=self.signals.progress.emit,
+            )
         except Exception as exc:  # worker boundary: errors must become visible status
             self.signals.error.emit(str(exc))
         else:
@@ -133,6 +163,10 @@ class HistoryRefreshWorker(QRunnable):
         self.window_days = window_days
         self.client_factory = client_factory
         self.signals = HistoryWorkerSignals()
+        self._cancelled = Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
 
     @Slot()
     def run(self) -> None:
@@ -147,6 +181,7 @@ class HistoryRefreshWorker(QRunnable):
                 cities=self.cities,
                 qualities=(1,),
                 time_scale=HistoryTimeScale.SIX_HOURLY,
+                is_cancelled=self._cancelled.is_set,
             )
             completed_at = datetime.now(UTC)
             self.repository.upsert_many(result.intervals)
@@ -290,6 +325,8 @@ class MarketDataView(QWidget):
         catalog: CatalogRepository,
         settings: SettingsRepository,
         history: MarketHistoryRepository | None = None,
+        *,
+        auto_refresh_on_startup: bool = False,
     ) -> None:
         super().__init__()
         self.repository = repository
@@ -299,6 +336,8 @@ class MarketDataView(QWidget):
         self.history = history
         self.thread_pool = QThreadPool.globalInstance()
         self._workers: set[QRunnable] = set()
+        self._closing = False
+        self._startup_refresh_pending = auto_refresh_on_startup
         root = QVBoxLayout(self)
         title = QLabel("Market Data")
         title.setObjectName("pageTitle")
@@ -309,16 +348,38 @@ class MarketDataView(QWidget):
         root.addWidget(self.status)
 
         actions = QHBoxLayout()
+        actions.addWidget(QLabel("Current-price IDs"))
         self.requested_items = QLineEdit("T4_MAIN_SWORD,T4_METALBAR,T4_LEATHER")
-        self.requested_items.setPlaceholderText("Comma-separated canonical Albion item IDs")
+        self.requested_items.setPlaceholderText(
+            "Type current-price item IDs here; history IDs below are separate"
+        )
         actions.addWidget(self.requested_items, 1)
-        self.refresh_button = QPushButton("Refresh listed IDs from AODP")
+        self.refresh_button = QPushButton("Refresh current prices for IDs")
         self.refresh_button.clicked.connect(self.refresh_from_network)
         actions.addWidget(self.refresh_button)
+        self.full_refresh_button = QPushButton("Refresh ALL catalog prices")
+        self.full_refresh_button.setToolTip(
+            "Ignores the ID fields and checks every item in the active static catalog at "
+            "Normal quality across every supported marketplace city."
+        )
+        self.full_refresh_button.clicked.connect(self.refresh_all_from_network)
+        actions.addWidget(self.full_refresh_button)
         self.static_button = QPushButton("Update Static Game Data")
+        self.static_button.setToolTip(
+            "Updates recipes and Item Values only; it does not download market prices."
+        )
         self.static_button.clicked.connect(self.update_static_data)
         actions.addWidget(self.static_button)
         root.addLayout(actions)
+        market_note = QLabel(
+            "Automatic/current-price refresh checks AODP for every requested item and city. "
+            "A row can remain Missing after a successful check when AODP has no reported player "
+            "order. Static Item Value, station usage fees, and your Focus profile are separate "
+            "inputs and cannot be supplied by the marketplace API."
+        )
+        market_note.setWordWrap(True)
+        market_note.setObjectName("muted")
+        root.addWidget(market_note)
 
         history_group = QGroupBox("Optional AODP reported-activity history")
         history_layout = QFormLayout(history_group)
@@ -330,7 +391,7 @@ class MarketDataView(QWidget):
         self.history_window.setRange(1, MAX_HISTORY_WINDOW_DAYS)
         self.history_window.setValue(7)
         self.history_window.setSuffix(" days")
-        self.history_button = QPushButton("Refresh six-hour history")
+        self.history_button = QPushButton("Refresh reported history (not current prices)")
         self.history_button.clicked.connect(self.refresh_history_from_network)
         history_layout.addRow("Item IDs", self.history_items)
         history_layout.addRow("Cities", self.history_cities)
@@ -401,6 +462,8 @@ class MarketDataView(QWidget):
         override_layout.addRow(self.override_table)
         root.addWidget(override_group)
         self.reload()
+        if auto_refresh_on_startup:
+            QTimer.singleShot(0, self._run_startup_refresh)
 
     def _region(self) -> Region:
         return Region(str(self.settings.get("region", DEFAULT_SETTINGS["region"])))
@@ -419,38 +482,147 @@ class MarketDataView(QWidget):
                 f"A manual GUI refresh is limited to {MAX_CURRENT_ITEM_IDS} distinct item IDs."
             )
             return
+        self._start_current_refresh(item_ids, full_catalog=False, startup=False)
+
+    def refresh_all_from_network(self, *, startup: bool = False) -> None:
+        """Refresh every catalog item, ignoring both manual ID fields."""
+
+        item_ids = self.catalog.list_item_ids()
+        if not item_ids:
+            if startup:
+                self._startup_refresh_pending = True
+                self.status.setText(
+                    "Startup marketplace refresh is waiting for a static catalog. "
+                    "Downloading and validating static game data first…"
+                )
+                self.update_static_data()
+            else:
+                self.status.setText(
+                    "Cannot refresh the full marketplace until Static Game Data has been "
+                    "imported. Click Update Static Game Data, then try again."
+                )
+            return
+        self._startup_refresh_pending = False
+        self._start_current_refresh(item_ids, full_catalog=True, startup=startup)
+
+    def _run_startup_refresh(self) -> None:
+        if self._closing or not self._startup_refresh_pending:
+            return
+        self.refresh_all_from_network(startup=True)
+
+    def _start_current_refresh(
+        self,
+        item_ids: tuple[str, ...],
+        *,
+        full_catalog: bool,
+        startup: bool,
+    ) -> None:
+        if self._closing:
+            return
+        if any(isinstance(worker, MarketRefreshWorker) for worker in self._workers):
+            self.status.setText(
+                "A current-price refresh is already running. Its successful batches are being "
+                "saved as they complete."
+            )
+            return
+        if any(
+            isinstance(worker, (HistoryRefreshWorker, StaticDataWorker)) for worker in self._workers
+        ):
+            self.status.setText(
+                "Another network update is already running. Wait for it to finish before "
+                "starting the current-price refresh."
+            )
+            return
         region = self._region()
-        self.refresh_button.setEnabled(False)
+        self._set_current_refresh_running(True)
+        scope = "the complete active catalog" if full_catalog else "the selected IDs"
+        startup_text = "Automatic startup refresh: " if startup else ""
         self.status.setText(
-            f"Requesting {len(item_ids)} item IDs for all Royal Cities from "
-            f"{region.display_name} AODP in bounded background batches…"
+            f"{startup_text}checking {len(item_ids):,} item IDs from {scope} at Normal quality "
+            f"across {len(CITIES)} supported cities on {region.display_name} AODP. "
+            "Requests run sequentially in bounded background batches; every successful batch "
+            "is saved immediately…"
         )
         worker = MarketRefreshWorker(region, self.repository, item_ids)
         self._workers.add(worker)
-        worker.signals.detailed.connect(
-            lambda result, w=worker: self._refresh_detailed_finished(w, result)
+        worker.signals.progress.connect(
+            lambda progress, w=worker, full=full_catalog: self._refresh_progress(w, progress, full)
         )
-        worker.signals.error.connect(lambda message, w=worker: self._refresh_failed(w, message))
+        worker.signals.detailed.connect(
+            lambda result, w=worker, full=full_catalog: self._refresh_detailed_finished(
+                w, result, full
+            )
+        )
+        worker.signals.error.connect(
+            lambda message, w=worker, full=full_catalog: self._refresh_failed(w, message, full)
+        )
         self.thread_pool.start(worker)
+
+    def _refresh_progress(
+        self,
+        worker: QRunnable,
+        progress: BatchProgress,
+        full_catalog: bool,
+    ) -> None:
+        if self._closing or worker not in self._workers:
+            return
+        scope = "Full-catalog refresh" if full_catalog else "Current-price refresh"
+        outcome = "saved" if progress.successful else "failed"
+        self.status.setText(
+            f"{scope}: batch {progress.completed_batches:,}/{progress.batch_count:,} "
+            f"{outcome}; latest batch returned {progress.records_returned:,} item/city rows. "
+            "Successful batches are already persisted. The app remains usable while this runs."
+        )
 
     def _refresh_detailed_finished(
         self,
         worker: QRunnable,
         result: BatchFetchResult,
+        full_catalog: bool = False,
     ) -> None:
         self._workers.discard(worker)
-        self.refresh_button.setEnabled(True)
-        self.status.setText(
-            f"AODP current refresh: {result.items_requested} item IDs; "
-            f"{result.http_batches} HTTP batches "
-            f"({result.successful_batches} successful, {result.failed_batches} failed); "
-            f"{result.records_returned} valid records; "
-            f"{len(result.record_failures)} malformed rows skipped; "
-            f"{result.elapsed_seconds:.2f}s. Successful observations were merged side-by-side; "
-            "existing cache timestamps were preserved where incoming data was missing or older."
-        )
+        if self._closing:
+            return
+        self._set_current_refresh_running(False)
+        self.status.setText(self._current_refresh_status(result, full_catalog=full_catalog))
         self.reload(update_status=False)
         self.data_changed.emit()
+
+    @staticmethod
+    def _current_refresh_status(
+        result: BatchFetchResult,
+        *,
+        full_catalog: bool = False,
+    ) -> str:
+        sell_prices = sum(record.sell_price is not None for record in result.records)
+        buy_prices = sum(record.buy_price is not None for record in result.records)
+        empty_rows = sum(
+            record.sell_price is None and record.buy_price is None for record in result.records
+        )
+        empty_note = (
+            f" {empty_rows} returned item/city rows had no reported sell or buy order; "
+            "a successful check cannot create a price when AODP has no observation."
+            if empty_rows
+            else ""
+        )
+        prefix = (
+            "Full-catalog AODP current-price refresh"
+            if full_catalog
+            else "AODP current-price check"
+        )
+        cancelled_note = (
+            " Refresh was cancelled after the saved batches." if result.cancelled else ""
+        )
+        return (
+            f"{prefix}: {result.items_requested:,} item IDs; "
+            f"{result.http_batches} HTTP batches "
+            f"({result.successful_batches} successful, {result.failed_batches} failed); "
+            f"{sell_prices:,} sell-order prices and {buy_prices:,} buy-order prices returned "
+            f"across {result.records_returned:,} item/city rows; "
+            f"{len(result.record_failures)} malformed rows skipped; "
+            f"{result.elapsed_seconds:.2f}s.{empty_note}{cancelled_note} Fetched (UTC) means AODP "
+            "was checked; Sell/Buy Observation is the timestamp of an actual reported order."
+        )
 
     def _refresh_finished(
         self,
@@ -460,7 +632,7 @@ class MarketDataView(QWidget):
         batches: int,
     ) -> None:
         self._workers.discard(worker)
-        self.refresh_button.setEnabled(True)
+        self._set_current_refresh_running(False)
         self.status.setText(
             f"AODP refresh: {records} records from {batches - failures}/{batches} successful "
             f"batches; {failures} failed. Successful observations were merged side-by-side; "
@@ -469,14 +641,51 @@ class MarketDataView(QWidget):
         self.reload(update_status=False)
         self.data_changed.emit()
 
-    def _refresh_failed(self, worker: QRunnable, message: str) -> None:
+    def _refresh_failed(
+        self,
+        worker: QRunnable,
+        message: str,
+        full_catalog: bool = False,
+    ) -> None:
         self._workers.discard(worker)
-        self.refresh_button.setEnabled(True)
+        if self._closing:
+            return
+        self._set_current_refresh_running(False)
+        scope = "Full-catalog market refresh" if full_catalog else "Live market refresh"
         self.status.setText(
-            "Live market refresh failed. Existing cache remains unchanged. Error: " + message
+            f"{scope} stopped. Successful earlier batches remain saved and all prior cache rows "
+            f"were preserved. Error: {message}"
         )
 
+    def _set_current_refresh_running(self, running: bool) -> None:
+        if not running:
+            self._set_network_buttons_idle()
+            return
+        self.refresh_button.setEnabled(False)
+        self.full_refresh_button.setEnabled(False)
+        self.history_button.setEnabled(False)
+        self.static_button.setEnabled(False)
+
+    def _set_network_buttons_idle(self) -> None:
+        network_running = any(
+            isinstance(worker, (MarketRefreshWorker, HistoryRefreshWorker, StaticDataWorker))
+            for worker in self._workers
+        )
+        self.refresh_button.setEnabled(not network_running)
+        self.full_refresh_button.setEnabled(not network_running)
+        self.history_button.setEnabled(not network_running and self.history is not None)
+        self.static_button.setEnabled(not network_running)
+
     def refresh_history_from_network(self) -> None:
+        if any(
+            isinstance(worker, (MarketRefreshWorker, HistoryRefreshWorker, StaticDataWorker))
+            for worker in self._workers
+        ):
+            self.status.setText(
+                "Another network update is already running. Wait for it to finish before "
+                "refreshing history."
+            )
+            return
         if self.history is None:
             self.status.setText(
                 "History refresh is unavailable because no history repository was supplied."
@@ -511,6 +720,9 @@ class MarketDataView(QWidget):
         region = self._region()
         window_days = self.history_window.value()
         self.history_button.setEnabled(False)
+        self.refresh_button.setEnabled(False)
+        self.full_refresh_button.setEnabled(False)
+        self.static_button.setEnabled(False)
         self.status.setText(
             f"Requesting {window_days} days of six-hour reported activity for "
             f"{len(item_ids)} item IDs in {len(cities)} cities from "
@@ -536,7 +748,9 @@ class MarketDataView(QWidget):
         summary: HistoryRefreshSummary,
     ) -> None:
         self._workers.discard(worker)
-        self.history_button.setEnabled(self.history is not None)
+        if self._closing:
+            return
+        self._set_network_buttons_idle()
         result = summary.result
         self.status.setText(
             f"AODP history refresh: {result.items_requested} item IDs; "
@@ -556,14 +770,31 @@ class MarketDataView(QWidget):
 
     def _history_failed(self, worker: QRunnable, message: str) -> None:
         self._workers.discard(worker)
-        self.history_button.setEnabled(self.history is not None)
+        if self._closing:
+            return
+        self._set_network_buttons_idle()
         self.status.setText(
             "History refresh could not complete. Previously cached history remains available; "
             "the current-price cache was not changed. Error: " + message
         )
 
     def update_static_data(self) -> None:
+        if any(
+            isinstance(worker, (MarketRefreshWorker, HistoryRefreshWorker))
+            for worker in self._workers
+        ):
+            self.status.setText(
+                "Another network update is already running. Wait for it to finish before "
+                "updating static game data."
+            )
+            return
+        if any(isinstance(worker, StaticDataWorker) for worker in self._workers):
+            self.status.setText("A static game-data update is already running in the background.")
+            return
         self.static_button.setEnabled(False)
+        self.refresh_button.setEnabled(False)
+        self.full_refresh_button.setEnabled(False)
+        self.history_button.setEnabled(False)
         self.status.setText(
             "Checking the maintained ao-data/ao-bin-dumps release and importing it in the "
             "background. Cached release files will be reused when possible…"
@@ -580,21 +811,37 @@ class MarketDataView(QWidget):
 
     def _static_finished(self, worker: QRunnable, items: int, recipes: int, version: str) -> None:
         self._workers.discard(worker)
-        self.static_button.setEnabled(True)
-        self.status.setText(
+        if self._closing:
+            return
+        self._set_network_buttons_idle()
+        message = (
             f"Static import complete: {items:,} items and {recipes:,} craftable variants "
             f"from commit {version}. {self._catalog_health_text()}"
         )
+        if self._startup_refresh_pending:
+            message += " Starting the automatic full-catalog marketplace refresh now…"
+        self.status.setText(message)
         self.catalog_changed.emit()
+        if self._startup_refresh_pending:
+            QTimer.singleShot(0, self._run_startup_refresh)
 
     def _static_failed(self, worker: QRunnable, message: str) -> None:
         self._workers.discard(worker)
-        self.static_button.setEnabled(True)
+        if self._closing:
+            return
+        startup_was_waiting = self._startup_refresh_pending
+        self._startup_refresh_pending = False
+        self._set_network_buttons_idle()
         self.status.setText(
             "Static-data update failed. The previously imported catalog remains intact. Error: "
             + message
             + ". "
             + self._catalog_health_text()
+            + (
+                " Automatic marketplace refresh could not start without an active catalog."
+                if startup_was_waiting
+                else ""
+            )
         )
 
     def set_override(self) -> None:
@@ -641,7 +888,8 @@ class MarketDataView(QWidget):
                 )
             )
         )
-        records = self.repository.list_all(region)
+        total_records = self.repository.count(region)
+        records = self.repository.list_for_display(region, limit=MAX_MARKET_TABLE_ROWS)
         sorting_enabled = self.table.isSortingEnabled()
         self.table.setUpdatesEnabled(False)
         try:
@@ -704,7 +952,7 @@ class MarketDataView(QWidget):
         self.override_table.resizeColumnsToContents()
         if update_status:
             self.status.setText(
-                f"{self._market_health_text(records, policy)}; "
+                f"{self._market_health_text(records, policy, total_rows=total_records)}; "
                 f"{len(overrides)} separate user overrides for {region.display_name}; "
                 f"{self._catalog_health_text()}; {self._history_health_text(region)}."
             )
@@ -742,6 +990,8 @@ class MarketDataView(QWidget):
     def _market_health_text(
         records: Sequence[MarketPrice],
         policy: FreshnessPolicy,
+        *,
+        total_rows: int | None = None,
     ) -> str:
         states: Counter[str] = Counter()
         for record in records:
@@ -755,8 +1005,14 @@ class MarketDataView(QWidget):
                     states[policy.classify(timestamp).value.casefold()] += 1
         latest_fetch = max((record.fetched_at for record in records), default=None)
         latest_text = latest_fetch.isoformat() if latest_fetch is not None else "never"
+        total = len(records) if total_rows is None else total_rows
+        scope = (
+            f"Current cache {total:,} rows"
+            if total == len(records)
+            else f"Showing {len(records):,} useful rows from {total:,} cached rows"
+        )
         return (
-            f"Current cache {len(records)} rows / {len(records) * 2} sides: "
+            f"{scope} / {len(records) * 2:,} displayed sides: "
             f"{states['fresh']} fresh, {states['aging']} aging, {states['stale']} stale, "
             f"{states['future']} future-dated (invalid), {states['missing']} missing, "
             f"{states['unknown']} unknown timestamp; "
@@ -839,3 +1095,35 @@ class MarketDataView(QWidget):
     @classmethod
     def _timestamp_item(cls, value: datetime | None) -> SortableItem:
         return SortableItem(value.isoformat() if value else "Missing", cls._sort_timestamp(value))
+
+    def shutdown(self) -> None:
+        """Cancel bounded network work and detach callbacks before widget destruction."""
+
+        if self._closing:
+            return
+        self._closing = True
+        self._startup_refresh_pending = False
+        for worker in tuple(self._workers):
+            cancel = getattr(worker, "cancel", None)
+            if callable(cancel):
+                cancel()
+            signals = getattr(worker, "signals", None)
+            if signals is None:
+                continue
+            if isinstance(worker, MarketRefreshWorker):
+                names = ("progress", "detailed", "error")
+            else:
+                names = ("finished", "error")
+            for name in names:
+                signal = getattr(signals, name, None)
+                if signal is None:
+                    continue
+                try:
+                    signal.disconnect()
+                except RuntimeError:
+                    pass
+        self._workers.clear()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        self.shutdown()
+        super().closeEvent(event)

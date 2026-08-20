@@ -386,6 +386,15 @@ class CatalogRepository:
             recipes = connection.execute("SELECT COUNT(*) FROM catalog_recipes").fetchone()[0]
         return int(items), int(recipes)
 
+    def list_item_ids(self) -> tuple[str, ...]:
+        """Return every canonical item ID in the active static catalog."""
+
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT item_id FROM catalog_items ORDER BY item_id"
+            ).fetchall()
+        return tuple(str(row["item_id"]) for row in rows)
+
     def recipe_coverage(self) -> CatalogRecipeCoverage:
         """Classify imported recipes without hydrating ingredients or querying per recipe."""
 
