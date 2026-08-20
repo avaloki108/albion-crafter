@@ -1,0 +1,51 @@
+{
+  "items": {
+    "simpleitem": [
+      {"@uniquename":"T3_PLANKS","@tier":"3","@itemvalue":"8","@craftingcategory":"wood","@enchantmentlevel":"0"},
+      {"@uniquename":"T3_METALBAR","@tier":"3","@itemvalue":"8","@craftingcategory":"ore","@enchantmentlevel":"0"},
+      {"@uniquename":"T3_LEATHER","@tier":"3","@itemvalue":"8","@craftingcategory":"hide","@enchantmentlevel":"0"},
+      {"@uniquename":"T3_CLOTH","@tier":"3","@itemvalue":"8","@craftingcategory":"fiber","@enchantmentlevel":"0"},
+      {"@uniquename":"T3_STONEBLOCK","@tier":"3","@itemvalue":"8","@craftingcategory":"rock","@enchantmentlevel":"0"},
+
+      {"@uniquename":"T4_WOOD","@tier":"4","@itemvalue":"4","@enchantmentlevel":"0"},
+      {"@uniquename":"T5_WOOD","@tier":"5","@itemvalue":"5.34","@enchantmentlevel":"0"},
+      {"@uniquename":"T6_WOOD","@tier":"6","@itemvalue":"8","@enchantmentlevel":"0"},
+      {"@uniquename":"T4_ORE","@tier":"4","@itemvalue":"4","@enchantmentlevel":"0"},
+      {"@uniquename":"T5_ORE","@tier":"5","@itemvalue":"5.34","@enchantmentlevel":"0"},
+      {"@uniquename":"T6_ORE","@tier":"6","@itemvalue":"8","@enchantmentlevel":"0"},
+      {"@uniquename":"T4_HIDE","@tier":"4","@itemvalue":"4","@enchantmentlevel":"0"},
+      {"@uniquename":"T5_HIDE","@tier":"5","@itemvalue":"5.34","@enchantmentlevel":"0"},
+      {"@uniquename":"T6_HIDE","@tier":"6","@itemvalue":"8","@enchantmentlevel":"0"},
+      {"@uniquename":"T4_FIBER","@tier":"4","@itemvalue":"4","@enchantmentlevel":"0"},
+      {"@uniquename":"T5_FIBER","@tier":"5","@itemvalue":"5.34","@enchantmentlevel":"0"},
+      {"@uniquename":"T6_FIBER","@tier":"6","@itemvalue":"8","@enchantmentlevel":"0"},
+      {"@uniquename":"T4_ROCK","@tier":"4","@itemvalue":"4","@enchantmentlevel":"0"},
+      {"@uniquename":"T5_ROCK","@tier":"5","@itemvalue":"5.34","@enchantmentlevel":"0"},
+      {"@uniquename":"T6_ROCK","@tier":"6","@itemvalue":"8","@enchantmentlevel":"0"},
+
+      {"@uniquename":"T4_PLANKS","@tier":"4","@itemvalue":"16","@craftingcategory":"wood","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"54","@amountcrafted":"1","craftresource":[{"@uniquename":"T4_WOOD","@count":"2","@enchantmentlevel":"0"},{"@uniquename":"T3_PLANKS","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T5_PLANKS","@tier":"5","@itemvalue":"32","@craftingcategory":"wood","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"94","@amountcrafted":"1","craftresource":[{"@uniquename":"T5_WOOD","@count":"3","@enchantmentlevel":"0"},{"@uniquename":"T4_PLANKS","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T6_PLANKS","@tier":"6","@itemvalue":"64","@craftingcategory":"wood","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"164","@amountcrafted":"1","craftresource":[{"@uniquename":"T6_WOOD","@count":"4","@enchantmentlevel":"0"},{"@uniquename":"T5_PLANKS","@count":"1","@enchantmentlevel":"0"}]}]},
+
+      {"@uniquename":"T4_METALBAR","@tier":"4","@itemvalue":"16","@craftingcategory":"ore","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"54","@amountcrafted":"1","craftresource":[{"@uniquename":"T4_ORE","@count":"2","@enchantmentlevel":"0"},{"@uniquename":"T3_METALBAR","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T5_METALBAR","@tier":"5","@itemvalue":"32","@craftingcategory":"ore","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"94","@amountcrafted":"1","craftresource":[{"@uniquename":"T5_ORE","@count":"3","@enchantmentlevel":"0"},{"@uniquename":"T4_METALBAR","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T6_METALBAR","@tier":"6","@itemvalue":"64","@craftingcategory":"ore","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"164","@amountcrafted":"1","craftresource":[{"@uniquename":"T6_ORE","@count":"4","@enchantmentlevel":"0"},{"@uniquename":"T5_METALBAR","@count":"1","@enchantmentlevel":"0"}]}]},
+
+      {"@uniquename":"T4_LEATHER","@tier":"4","@itemvalue":"16","@craftingcategory":"hide","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"54","@amountcrafted":"1","craftresource":[{"@uniquename":"T4_HIDE","@count":"2","@enchantmentlevel":"0"},{"@uniquename":"T3_LEATHER","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T5_LEATHER","@tier":"5","@itemvalue":"32","@craftingcategory":"hide","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"94","@amountcrafted":"1","craftresource":[{"@uniquename":"T5_HIDE","@count":"3","@enchantmentlevel":"0"},{"@uniquename":"T4_LEATHER","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T6_LEATHER","@tier":"6","@itemvalue":"64","@craftingcategory":"hide","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"164","@amountcrafted":"1","craftresource":[{"@uniquename":"T6_HIDE","@count":"4","@enchantmentlevel":"0"},{"@uniquename":"T5_LEATHER","@count":"1","@enchantmentlevel":"0"}]}]},
+
+      {"@uniquename":"T4_CLOTH","@tier":"4","@itemvalue":"16","@craftingcategory":"fiber","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"54","@amountcrafted":"1","craftresource":[{"@uniquename":"T4_FIBER","@count":"2","@enchantmentlevel":"0"},{"@uniquename":"T3_CLOTH","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T5_CLOTH","@tier":"5","@itemvalue":"32","@craftingcategory":"fiber","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"94","@amountcrafted":"1","craftresource":[{"@uniquename":"T5_FIBER","@count":"3","@enchantmentlevel":"0"},{"@uniquename":"T4_CLOTH","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T6_CLOTH","@tier":"6","@itemvalue":"64","@craftingcategory":"fiber","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"164","@amountcrafted":"1","craftresource":[{"@uniquename":"T6_FIBER","@count":"4","@enchantmentlevel":"0"},{"@uniquename":"T5_CLOTH","@count":"1","@enchantmentlevel":"0"}]}]},
+
+      {"@uniquename":"T4_STONEBLOCK","@tier":"4","@itemvalue":"16","@craftingcategory":"rock","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"54","@amountcrafted":"1","craftresource":[{"@uniquename":"T4_ROCK","@count":"2","@enchantmentlevel":"0"},{"@uniquename":"T3_STONEBLOCK","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T5_STONEBLOCK","@tier":"5","@itemvalue":"32","@craftingcategory":"rock","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"94","@amountcrafted":"1","craftresource":[{"@uniquename":"T5_ROCK","@count":"3","@enchantmentlevel":"0"},{"@uniquename":"T4_STONEBLOCK","@count":"1","@enchantmentlevel":"0"}]}]},
+      {"@uniquename":"T6_STONEBLOCK","@tier":"6","@itemvalue":"64","@craftingcategory":"rock","@enchantmentlevel":"0","craftingrequirements":[{"@craftingfocus":"164","@amountcrafted":"1","craftresource":[{"@uniquename":"T6_ROCK","@count":"4","@enchantmentlevel":"0"},{"@uniquename":"T5_STONEBLOCK","@count":"1","@enchantmentlevel":"0"}]}]},
+
+      {"@uniquename":"T5_ORE_LEVEL1","@tier":"5","@itemvalue":"10.66","@enchantmentlevel":"1"},
+      {"@uniquename":"T4_METALBAR_LEVEL1","@tier":"4","@itemvalue":"32","@craftingcategory":"ore","@enchantmentlevel":"1"},
+      {"@uniquename":"T5_METALBAR_LEVEL1","@tier":"5","@itemvalue":"64","@craftingcategory":"ore","@enchantmentlevel":"1","craftingrequirements":[{"@craftingfocus":"164","@amountcrafted":"1","craftresource":[{"@uniquename":"T5_ORE_LEVEL1","@count":"3","@enchantmentlevel":"1"},{"@uniquename":"T4_METALBAR_LEVEL1","@count":"1","@enchantmentlevel":"1"}]}]}
+    ]
+  }
+}

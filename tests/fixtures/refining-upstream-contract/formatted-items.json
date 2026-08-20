@@ -1,0 +1,18 @@
+[
+  {"UniqueName":"T4_PLANKS","LocalizedNames":{"EN-US":"Pine Planks"}},
+  {"UniqueName":"T5_PLANKS","LocalizedNames":{"EN-US":"Cedar Planks"}},
+  {"UniqueName":"T6_PLANKS","LocalizedNames":{"EN-US":"Bloodoak Planks"}},
+  {"UniqueName":"T4_METALBAR","LocalizedNames":{"EN-US":"Steel Bar"}},
+  {"UniqueName":"T5_METALBAR","LocalizedNames":{"EN-US":"Titanium Steel Bar"}},
+  {"UniqueName":"T6_METALBAR","LocalizedNames":{"EN-US":"Runite Steel Bar"}},
+  {"UniqueName":"T5_METALBAR_LEVEL1@1","LocalizedNames":{"EN-US":"Uncommon Titanium Steel Bar"}},
+  {"UniqueName":"T4_LEATHER","LocalizedNames":{"EN-US":"Worked Leather"}},
+  {"UniqueName":"T5_LEATHER","LocalizedNames":{"EN-US":"Cured Leather"}},
+  {"UniqueName":"T6_LEATHER","LocalizedNames":{"EN-US":"Hardened Leather"}},
+  {"UniqueName":"T4_CLOTH","LocalizedNames":{"EN-US":"Fine Cloth"}},
+  {"UniqueName":"T5_CLOTH","LocalizedNames":{"EN-US":"Ornate Cloth"}},
+  {"UniqueName":"T6_CLOTH","LocalizedNames":{"EN-US":"Lavish Cloth"}},
+  {"UniqueName":"T4_STONEBLOCK","LocalizedNames":{"EN-US":"Travertine Block"}},
+  {"UniqueName":"T5_STONEBLOCK","LocalizedNames":{"EN-US":"Granite Block"}},
+  {"UniqueName":"T6_STONEBLOCK","LocalizedNames":{"EN-US":"Slate Block"}}
+]
