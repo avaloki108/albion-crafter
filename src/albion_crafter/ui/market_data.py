@@ -64,6 +64,7 @@ MAX_HISTORY_CITIES = 3
 MAX_HISTORY_WINDOW_DAYS = 30
 HISTORY_RETENTION_DAYS = 30
 MAX_MARKET_TABLE_ROWS = 1_000
+CURRENT_REFRESH_MAX_PASSES = 3
 
 
 def _normalized_city(value: str) -> str:
@@ -79,6 +80,13 @@ class HistoryRefreshSummary:
     partial_coverage: int
     failed_coverage: int
     pruned_intervals: int
+
+
+@dataclass(frozen=True, slots=True)
+class MarketRefreshProgress:
+    pass_number: int
+    max_passes: int
+    batch: BatchProgress
 
 
 class MarketWorkerSignals(QObject):
@@ -113,21 +121,41 @@ class MarketRefreshWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            plan = plan_price_requests(
-                self.item_ids,
-                region=self.region,
-                cities=CITIES,
-                qualities=(1,),
-            )
-            client = self.client_factory(self.region, max_batches=plan.batch_count)
-            service = CachedMarketService(client, self.repository)
-            result = service.refresh(
-                self.item_ids,
-                cities=CITIES,
-                qualities=(1,),
-                is_cancelled=self._cancelled.is_set,
-                on_progress=self.signals.progress.emit,
-            )
+            attempts: list[BatchFetchResult] = []
+            remaining_ids = self.item_ids
+            for pass_number in range(1, CURRENT_REFRESH_MAX_PASSES + 1):
+                if self._cancelled.is_set() or not remaining_ids:
+                    break
+                plan = plan_price_requests(
+                    remaining_ids,
+                    region=self.region,
+                    cities=CITIES,
+                    qualities=(1,),
+                )
+                client = self.client_factory(self.region, max_batches=plan.batch_count)
+                service = CachedMarketService(client, self.repository)
+                attempt = service.refresh(
+                    remaining_ids,
+                    cities=CITIES,
+                    qualities=(1,),
+                    is_cancelled=self._cancelled.is_set,
+                    on_progress=lambda progress, current_pass=pass_number: (
+                        self.signals.progress.emit(
+                            MarketRefreshProgress(
+                                current_pass,
+                                CURRENT_REFRESH_MAX_PASSES,
+                                progress,
+                            )
+                        )
+                    ),
+                )
+                attempts.append(attempt)
+                remaining_ids = tuple(
+                    item_id for failure in attempt.failures for item_id in failure.item_ids
+                )
+                if attempt.cancelled:
+                    break
+            result = self._combine_attempts(attempts)
         except Exception as exc:  # worker boundary: errors must become visible status
             self.signals.error.emit(str(exc))
         else:
@@ -135,6 +163,38 @@ class MarketRefreshWorker(QRunnable):
                 len(result.records), len(result.failures), result.batch_count
             )
             self.signals.detailed.emit(result)
+
+    def _combine_attempts(self, attempts: Sequence[BatchFetchResult]) -> BatchFetchResult:
+        if not attempts:
+            return BatchFetchResult(
+                (),
+                (),
+                0,
+                items_requested=len(self.item_ids),
+                cancelled=self._cancelled.is_set(),
+            )
+        completed_ids: dict[str, str] = {}
+        for attempt in attempts:
+            for item_id in attempt.completed_item_ids:
+                completed_ids.setdefault(item_id.casefold(), item_id)
+        final = attempts[-1]
+        return BatchFetchResult(
+            records=tuple(record for attempt in attempts for record in attempt.records),
+            failures=final.failures,
+            batch_count=sum(attempt.batch_count for attempt in attempts),
+            items_requested=len(self.item_ids),
+            successful_batches=sum(attempt.successful_batches for attempt in attempts),
+            elapsed_seconds=sum(attempt.elapsed_seconds for attempt in attempts),
+            record_failures=tuple(
+                failure for attempt in attempts for failure in attempt.record_failures
+            ),
+            request_attempts=sum(attempt.request_attempts for attempt in attempts),
+            retry_count=sum(attempt.retry_count for attempt in attempts),
+            completed_batches=sum(attempt.completed_batches for attempt in attempts),
+            cancelled=final.cancelled,
+            max_url_bytes=max(attempt.max_url_bytes for attempt in attempts),
+            completed_item_ids=tuple(completed_ids.values()),
+        )
 
 
 class HistoryWorkerSignals(QObject):
