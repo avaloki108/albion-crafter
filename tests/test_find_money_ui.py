@@ -654,7 +654,7 @@ def test_simple_mode_distinguishes_missing_prices_and_accepts_inline_overrides(
     for row in range(view.price_setup_table.rowCount()):
         item_id = view.price_setup_table.item(row, 0).text()
         value = "2500" if item_id == "T4_MAIN_SWORD" else "100"
-        view.price_setup_table.item(row, 4).setText(value)
+        view.price_setup_table.item(row, 5).setText(value)
 
     view.save_price_overrides_and_continue()
     _wait_until(qt_app, lambda: view._thread is None)

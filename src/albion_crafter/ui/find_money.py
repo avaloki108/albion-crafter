@@ -520,14 +520,22 @@ class FindMoneyView(QWidget):
         self.price_setup = QGroupBox("MARKET DATA UNAVAILABLE")
         layout = QVBoxLayout(self.price_setup)
         self.price_setup_note = QLabel(
-            "No AODP observation is currently available for these required market prices. "
-            "You may enter the current in-game price, or try refreshing again."
+            "Sparse AODP refresh could not supply a usable current side. Missing values are not "
+            "treated as zero, and stale values are not silently re-dated. Enter the price you "
+            "currently see in Albion, or try refreshing again."
         )
         self.price_setup_note.setWordWrap(True)
         layout.addWidget(self.price_setup_note)
-        self.price_setup_table = QTableWidget(0, 5)
+        self.price_setup_table = QTableWidget(0, 6)
         self.price_setup_table.setHorizontalHeaderLabels(
-            ("Item", "City", "Quality", "Required market side", "Albion price")
+            (
+                "Item",
+                "City",
+                "Quality",
+                "Required market side",
+                "AODP state",
+                "Current Albion price",
+            )
         )
         self.price_setup_table.verticalHeader().setVisible(False)
         self.price_setup_table.horizontalHeader().setSectionResizeMode(
@@ -1324,6 +1332,11 @@ class FindMoneyView(QWidget):
                 key.city,
                 str(key.quality),
                 requirement.side.value.replace("_", " ").title(),
+                (
+                    "Missing"
+                    if assessment.price is None
+                    else f"{assessment.freshness.value.title()} · last {assessment.price:g}"
+                ),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -1331,8 +1344,8 @@ class FindMoneyView(QWidget):
                 self.price_setup_table.setItem(row, column, item)
             self.price_setup_table.setItem(
                 row,
-                4,
-                QTableWidgetItem("" if assessment.price is None else f"{assessment.price:g}"),
+                5,
+                QTableWidgetItem(""),
             )
         self.price_setup_status.setText(
             f"{len(requirements):,} required market price"
@@ -1345,7 +1358,7 @@ class FindMoneyView(QWidget):
             return
         parsed: list[tuple[PriceRequirementAssessment, int]] = []
         for row, assessment in enumerate(self._price_setup_requirements):
-            item = self.price_setup_table.item(row, 4)
+            item = self.price_setup_table.item(row, 5)
             raw = "" if item is None else item.text().strip().replace(",", "")
             try:
                 value = int(raw)
@@ -2032,6 +2045,8 @@ class FindMoneyView(QWidget):
                 }
         except (json.JSONDecodeError, TypeError, ValueError):
             rejection_counts = {}
+        if not self.advanced_toggle.isChecked():
+            rejection_counts.pop("focused_variant_unknown_fce", None)
         explanation = build_plan_explanation(
             snapshot,
             rejection_counts=rejection_counts,

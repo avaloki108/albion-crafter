@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
         ):
             self.navigation.addItem(QListWidgetItem(text))
         side_layout.addWidget(self.navigation)
-        version = QLabel("V0.6.1 · Simple Mode + unified money engine")
+        version = QLabel("V0.6.1\nSimple Mode")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         side_layout.addWidget(version)
