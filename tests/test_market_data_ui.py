@@ -28,6 +28,7 @@ from albion_crafter.market.history import (
 from albion_crafter.market.models import FreshnessPolicy, MarketPrice, Region
 from albion_crafter.ui.market_data import (
     HISTORY_RETENTION_DAYS,
+    HistoryRefreshSummary,
     HistoryRefreshWorker,
     MarketDataView,
 )
