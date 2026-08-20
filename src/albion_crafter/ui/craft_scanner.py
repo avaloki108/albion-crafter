@@ -422,17 +422,35 @@ class CraftScannerView(QWidget):
             f"Elapsed {snapshot.elapsed_seconds:.3f}s · ruleset {snapshot.ruleset_id}. "
             "The 500-row display cap is not an analysis cap."
         )
-        empty_actionable = bool(
-            snapshot.constraints.actionable_only and snapshot.actionable_count == 0
-        )
+        empty_actionable = bool(snapshot.constraints.actionable_only and not snapshot.opportunities)
         self.zero_results.setVisible(empty_actionable)
         self.show_nonactionable_button.setVisible(empty_actionable)
         if empty_actionable:
+            rejection_labels = {
+                "market_data": "missing or stale market prices",
+                "unsupported_static": "unsupported static data",
+                "setup_required": "station or Focus setup required",
+                "unprofitable": "unprofitable or below profit/ROI filters",
+                "trust_liquidity": "trust or liquidity filters",
+                "outside_filters": "capital or other selected filters",
+                "incomplete": "other incomplete calculations",
+            }
+            reason_lines = [
+                f"• {count:,} {rejection_labels.get(code, code.replace('_', ' '))}"
+                for code, count in snapshot.rejection_class_counts
+                if count
+            ]
+            if not reason_lines:
+                reason_lines.append(
+                    f"• {snapshot.rejected_count:,} rejected by the current evidence and filters"
+                )
             self.zero_results.setText(
                 "0 actionable results\n\n"
                 f"{snapshot.scenarios_evaluated:,} scenarios checked. None passed every saved "
                 "price-freshness, static-data, station-fee, profitability, and liquidity rule. "
-                "Show non-actionable opportunities to inspect the individual reasons."
+                "\n\nReason summary:\n"
+                + "\n".join(reason_lines)
+                + "\n\nShow non-actionable opportunities to inspect the individual reasons."
             )
         self.detail.clear()
 

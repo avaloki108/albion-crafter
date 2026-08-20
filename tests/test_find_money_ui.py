@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Event
+from urllib.parse import parse_qs, urlparse
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -31,7 +33,9 @@ from albion_crafter.database.v4 import (
     FindMoneyPreferencesRepository,
     PlanSnapshotRepository,
 )
+from albion_crafter.market.aodp import AODPClient
 from albion_crafter.market.models import MarketPrice, Region
+from albion_crafter.planning.current_refresh import CurrentMarketRefreshExecutor
 from albion_crafter.planning.models import (
     ArbitrageScope,
     FindMoneyConstraints,
@@ -595,6 +599,74 @@ def test_simple_mode_one_click_searches_crafting_refining_and_arbitrage(
     assert view.preflight.summary.arbitrage_routes > 0
     assert view.action_table.rowCount() > 0
     assert view.plan_banner.text().startswith("BEST PLAN")
+    assert "SEARCH CHECKED" in view.simple_result_summary.text()
+    assert "Matching recipes      2" in view.simple_result_summary.text()
+    assert "Fully priced routes" in view.simple_result_summary.text()
+    assert "Profitable routes" in view.simple_result_summary.text()
+    view.close()
+
+
+def test_simple_mode_one_click_refreshes_stale_prices_only_after_press(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    stale = (NOW - timedelta(hours=8)).isoformat()
+    with service.market_prices.database.connection() as connection:
+        connection.execute(
+            "UPDATE market_prices SET sell_price_timestamp=?, buy_price_timestamp=?",
+            (stale, stale),
+        )
+    requests: list[str] = []
+
+    def transport(url: str, _timeout: float) -> bytes:
+        requests.append(url)
+        parsed = urlparse(url)
+        item_ids = parsed.path.partition("/prices/")[2].removesuffix(".json").split(",")
+        query = parse_qs(parsed.query)
+        city = query["locations"][0]
+        quality = int(query["qualities"][0])
+        return json.dumps(
+            [
+                {
+                    "item_id": item_id,
+                    "city": city,
+                    "quality": quality,
+                    "sell_price_min": 2_500 if item_id == "T4_MAIN_SWORD" else 100,
+                    "sell_price_min_date": NOW.isoformat(),
+                    "buy_price_max": 2_400 if item_id == "T4_MAIN_SWORD" else 90,
+                    "buy_price_max_date": NOW.isoformat(),
+                }
+                for item_id in item_ids
+            ]
+        ).encode()
+
+    service.current_refresh = CurrentMarketRefreshExecutor(
+        service.market_prices,
+        client_factory=lambda region: AODPClient(
+            region,
+            transport=transport,
+            wall_clock=lambda: NOW,
+        ),
+    )
+    recording = RecordingService(service)
+    view = FindMoneyView(
+        recording,  # type: ignore[arg-type]
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+
+    assert requests == []
+    view.find_money()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert len(requests) == 1
+    assert view.run_result is not None
+    assert view.run_result.current_refresh is not None
+    assert view.run_result.current_refresh.keys_requested == 2
+    assert view.run_result.current_refresh.batches_failed == 0
+    assert view.plan_banner.text().startswith("BEST PLAN")
     view.close()
 
 
@@ -651,6 +723,11 @@ def test_simple_mode_distinguishes_missing_prices_and_accepts_inline_overrides(
     assert view.plan_banner.text() == "NOT ENOUGH DATA TO KNOW"
     assert not view.price_setup.isHidden()
     assert view.price_setup_table.rowCount() == 2
+    assert all(
+        view.price_setup_table.item(row, 4).text() == "Missing"
+        and view.price_setup_table.item(row, 5).text() == ""
+        for row in range(view.price_setup_table.rowCount())
+    )
     for row in range(view.price_setup_table.rowCount()):
         item_id = view.price_setup_table.item(row, 0).text()
         value = "2500" if item_id == "T4_MAIN_SWORD" else "100"

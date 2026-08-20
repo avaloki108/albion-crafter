@@ -202,6 +202,8 @@ def test_acid_potion_missing_upstream_item_value_is_not_silently_zeroed(tmp_path
     assert coverage.total == 1
     assert coverage.supported == 0
     assert coverage.unknown_item_value == 1
+    assert coverage.unknown_station_type == 0
+    assert coverage.ambiguous_recipe == 0
 
 
 def test_static_parser_rejects_malformed_json(tmp_path) -> None:

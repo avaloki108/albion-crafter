@@ -51,6 +51,11 @@ def test_zero_actionable_scan_explains_scope_and_offers_reason_inspection(
         market_rows_loaded=12,
         override_rows_loaded=0,
         elapsed_seconds=0.1,
+        rejection_class_counts=(
+            ("market_data", 31),
+            ("unprofitable", 28),
+            ("unsupported_static", 22),
+        ),
     )
 
     view._render(snapshot)
@@ -58,6 +63,9 @@ def test_zero_actionable_scan_explains_scope_and_offers_reason_inspection(
     assert not view.zero_results.isHidden()
     assert "0 actionable results" in view.zero_results.text()
     assert "81 scenarios checked" in view.zero_results.text()
+    assert "31 missing or stale market prices" in view.zero_results.text()
+    assert "28 unprofitable" in view.zero_results.text()
+    assert "22 unsupported static data" in view.zero_results.text()
     assert "individual reasons" in view.zero_results.text()
     assert not view.show_nonactionable_button.isHidden()
 

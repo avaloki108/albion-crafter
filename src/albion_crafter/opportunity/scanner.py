@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -133,6 +134,7 @@ class OpportunityScanner:
         )
 
         opportunities: list[CraftOpportunity] = []
+        rejection_classes: Counter[str] = Counter()
         evaluated = 0
         actionable = 0
         cancelled = False
@@ -276,6 +278,10 @@ class OpportunityScanner:
                     )
                     if opportunity_passes_filters(opportunity, constraints):
                         opportunities.append(opportunity)
+                    else:
+                        rejection_classes[
+                            self._player_rejection_class(opportunity, constraints)
+                        ] += 1
                     if evaluated % progress_step == 0 or evaluated == total:
                         self._report(
                             progress,
@@ -329,7 +335,63 @@ class OpportunityScanner:
             elapsed_seconds=elapsed,
             cancelled=cancelled,
             notes=_SCAN_NOTES,
+            rejection_class_counts=tuple(sorted(rejection_classes.items())),
         )
+
+    @staticmethod
+    def _player_rejection_class(
+        opportunity: CraftOpportunity,
+        constraints: ScanConstraints,
+    ) -> str:
+        result = opportunity.calculation
+        codes = {reason.code for reason in result.actionability.blocking_reasons}
+        if codes & {
+            ReasonCode.MISSING_MATERIAL_PRICE,
+            ReasonCode.MISSING_OUTPUT_PRICE,
+            ReasonCode.STALE_PRICE,
+            ReasonCode.FUTURE_TIMESTAMP,
+            ReasonCode.UNKNOWN_TIMESTAMP,
+        }:
+            return "market_data"
+        if codes & {
+            ReasonCode.UNKNOWN_ITEM_VALUE,
+            ReasonCode.UNKNOWN_RETURNABILITY,
+            ReasonCode.AMBIGUOUS_RECIPE,
+            ReasonCode.UNKNOWN_CITY_BONUS_CLASSIFICATION,
+            ReasonCode.UNSUPPORTED_OUTPUT_QUALITY,
+            ReasonCode.PROVISIONAL_MECHANICS,
+        }:
+            return "unsupported_static"
+        if codes & {
+            ReasonCode.UNKNOWN_STATION_FEE,
+            ReasonCode.STALE_STATION_FEE,
+            ReasonCode.FUTURE_STATION_FEE_TIMESTAMP,
+            ReasonCode.UNKNOWN_STATION_FEE_TIMESTAMP,
+            ReasonCode.UNKNOWN_CRAFTING_SPECIALIZATION,
+            ReasonCode.UNKNOWN_REFINING_SPECIALIZATION,
+            ReasonCode.MISSING_FOCUS_COST,
+            ReasonCode.INSUFFICIENT_FOCUS,
+        }:
+            return "setup_required"
+        if codes & {ReasonCode.UNTRUSTED_PROVENANCE}:
+            return "trust_liquidity"
+        if result.profit is not None and (
+            result.profit <= 0
+            or (
+                constraints.minimum_profit is not None
+                and result.profit < constraints.minimum_profit
+            )
+            or (
+                constraints.minimum_roi is not None
+                and (result.roi is None or result.roi < constraints.minimum_roi)
+            )
+        ):
+            return "unprofitable"
+        if constraints.liquidity_levels:
+            return "trust_liquidity"
+        if result.profit is None:
+            return "incomplete"
+        return "outside_filters"
 
     @staticmethod
     def _maximum_focus_crafts(

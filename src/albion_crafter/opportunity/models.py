@@ -248,6 +248,7 @@ class ScanSnapshot:
     elapsed_seconds: float
     cancelled: bool = False
     notes: tuple[str, ...] = field(default_factory=tuple)
+    rejection_class_counts: tuple[tuple[str, int], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.scan_time.tzinfo is None:

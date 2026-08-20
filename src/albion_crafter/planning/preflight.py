@@ -240,6 +240,8 @@ class PreflightSummary:
     catalog_unknown_item_value: int = 0
     catalog_unknown_station_type: int = 0
     catalog_unknown_returnability: int = 0
+    catalog_ambiguous_recipes: int = 0
+    catalog_untrusted_recipes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -745,6 +747,8 @@ class FindMoneyPreflightPlanner:
             catalog_unknown_item_value=catalog_coverage.unknown_item_value,
             catalog_unknown_station_type=catalog_coverage.unknown_station_type,
             catalog_unknown_returnability=catalog_coverage.unknown_returnability,
+            catalog_ambiguous_recipes=catalog_coverage.ambiguous_recipe,
+            catalog_untrusted_recipes=catalog_coverage.untrusted_recipe,
         )
         return FindMoneyPreflight(
             created_at=created_at,

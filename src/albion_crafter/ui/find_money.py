@@ -1190,14 +1190,27 @@ class FindMoneyView(QWidget):
             if preflight.workload.warning is not None
             else " Planner workload is below the preflight warning thresholds."
         )
-        self._set_status(
-            f"Preflight complete: {len(preflight.eligible):,} eligible recipe routes and "
-            f"{len(preflight.arbitrage_routes):,} arbitrage routes; "
-            f"{attention:,} station fees need attention; {refresh_keys:,} current-price keys "
-            f"need refresh in {preflight.market_refresh.estimated_batches:,} bounded batches. "
-            f"Review this evidence, then explicitly run Refresh & Plan.{workload_note}",
-            state,
-        )
+        if self.advanced_toggle.isChecked():
+            status = (
+                f"Preflight complete: {len(preflight.eligible):,} eligible recipe routes and "
+                f"{len(preflight.arbitrage_routes):,} arbitrage routes; "
+                f"{attention:,} station fees need attention; {refresh_keys:,} current-price keys "
+                f"need refresh in {preflight.market_refresh.estimated_batches:,} bounded batches. "
+                f"Review this evidence, then explicitly run Refresh & Plan.{workload_note}"
+            )
+        else:
+            status = (
+                f"Setup check complete: "
+                f"{len(preflight.eligible) + len(preflight.arbitrage_routes):,} eligible routes, "
+                f"{attention:,} saved station fees need attention, and {refresh_keys:,} market "
+                "prices need refresh."
+                + (
+                    " This is a very large search; safety limits may make the result Approximate."
+                    if preflight.workload.warning is not None
+                    else ""
+                )
+            )
+        self._set_status(status, state)
         self._render_simple_preflight_summary(preflight)
         self.tabs.setCurrentIndex(0 if self.advanced_toggle.isChecked() else 1)
         return True
@@ -1568,7 +1581,11 @@ class FindMoneyView(QWidget):
         self._set_running(True)
         self._reset_stage_progress()
         self._set_status(
-            "Starting explicit current-price refresh and planning pipeline...",
+            (
+                "Starting explicit current-price refresh and planning pipeline..."
+                if self.advanced_toggle.isChecked()
+                else "Refreshing required market prices and building your plan..."
+            ),
             "aging",
         )
         thread.start()
@@ -1609,7 +1626,27 @@ class FindMoneyView(QWidget):
     def _worker_progress(self, worker: FindMoneyWorker, value: PlanningProgress) -> None:
         if worker is not self._worker:
             return
-        self.stage_label.setText(f"{value.stage.value.replace('_', ' ').title()} · {value.message}")
+        simple_messages = {
+            PlanningStage.PREFLIGHT: "Checking setup and supported routes",
+            PlanningStage.CURRENT_REFRESH: "Refreshing required market prices",
+            PlanningStage.INITIAL_EVALUATION: "Comparing current opportunities",
+            PlanningStage.SHORTLIST: "Selecting the strongest opportunities",
+            PlanningStage.HISTORY_REFRESH: "Checking reported market activity",
+            PlanningStage.FINAL_EVALUATION: "Rechecking evidence and profit",
+            PlanningStage.OPTIMIZATION: "Building the best bankroll allocation",
+            PlanningStage.VALIDATION: "Independently checking the plan",
+            PlanningStage.PERSISTENCE: "Saving an immutable result",
+            PlanningStage.COMPLETE: "Plan complete",
+            PlanningStage.CANCELLED: "Cancelled safely",
+        }
+        message = (
+            value.message if self.advanced_toggle.isChecked() else simple_messages[value.stage]
+        )
+        self.stage_label.setText(
+            f"{value.stage.value.replace('_', ' ').title()} · {message}"
+            if self.advanced_toggle.isChecked()
+            else message
+        )
         stage_index = self.STAGES.index(value.stage)
         stage_fraction = value.fraction or 0.0
         if value.stage is PlanningStage.COMPLETE:
@@ -1617,7 +1654,7 @@ class FindMoneyView(QWidget):
         else:
             numeric = round(100 * (stage_index + stage_fraction) / len(self.STAGES))
         self.progress.setValue(numeric)
-        self._set_status(value.message, "aging")
+        self._set_status(message, "aging")
 
     def _worker_finished(self, worker: FindMoneyWorker, result: FindMoneyRunResult) -> None:
         if worker is not self._worker:
@@ -1731,8 +1768,14 @@ class FindMoneyView(QWidget):
                 "unknown_timestamp",
             },
             "CURRENTLY UNPROFITABLE": {
+                "below_profit_or_roi",
                 "validation_failed",
                 "no_feasible_actions",
+            },
+            "OUTSIDE SELECTED FILTERS": {
+                "single_craft_exceeds_silver_budget",
+                "transport_forbidden",
+                "missing_explicit_transport_cost",
             },
             "UNSUPPORTED / STATIC-DATA COVERAGE": {
                 "unknown_item_value",
@@ -1745,6 +1788,7 @@ class FindMoneyView(QWidget):
             "ADVANCED TRUST / LIQUIDITY REJECTION": {
                 "unknown_liquidity",
                 "low_liquidity",
+                "below_minimum_liquidity",
                 "untrusted_provenance",
                 "unverified_mechanics",
             },
@@ -1863,9 +1907,39 @@ class FindMoneyView(QWidget):
                         f"{money(action.expected_profit)}",
                     )
                 )
+            search_lines: tuple[str, ...] = ()
+            if not historical and self.run_result is not None:
+                summary = self.run_result.preflight.summary
+                initial = self.run_result.initial_evaluation
+                fully_priced = len(initial.candidates) if initial is not None else 0
+                profitable = (
+                    sum(
+                        max(
+                            candidate.economics.nonfocused_profit_per_craft,
+                            candidate.economics.focused_profit_per_craft or -(10**30),
+                        )
+                        > 0
+                        for candidate in initial.candidates
+                    )
+                    if initial is not None
+                    else 0
+                )
+                eligible = len(self.run_result.preflight.eligible) + len(
+                    self.run_result.preflight.arbitrage_routes
+                )
+                search_lines = (
+                    "SEARCH CHECKED",
+                    f"Supported catalog     {summary.supported_catalog_recipes:,}",
+                    f"Matching recipes      {summary.matched_recipes:,}",
+                    f"Eligible routes       {eligible:,}",
+                    f"Fully priced routes   {fully_priced:,}",
+                    f"Profitable routes     {profitable:,}",
+                    "",
+                )
             self.simple_result_summary.setText(
                 "\n".join(
                     (
+                        *search_lines,
                         f"Expected profit       {money(snapshot.total_expected_profit)}",
                         f"Capital required      {money(snapshot.total_pre_revenue_cash)}",
                         f"Capital remaining     {money(snapshot.silver_remaining)}",
