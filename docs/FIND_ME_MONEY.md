@@ -1,9 +1,45 @@
-# Find Me Money V0.6
+# Find Me Money V0.6.1
 
 Find Me Money is the GUI-independent bankroll planner for Craft, Refine, and Market Arbitrage. It
 turns explicit constraints and locally retained evidence into one immutable, independently
-validated plan. Construction and preflight perform no HTTP; network work starts only after the
-user presses **Run / Refresh & Plan**.
+validated plan. Construction and preflight perform no HTTP; network work starts only after an
+explicit player action.
+
+## Simple Mode and Advanced Mode
+
+Simple Mode is the default application page and the default Find Me Money presentation. The
+player enters available silver, an optional reserve, home city, Premium/Focus choice, optional
+item search, and a named trust preset, then presses **FIND ME MONEY** once. That action runs the
+same V0.6 preflight and execution services used by Advanced Mode; it does not introduce a second
+calculator or a different price policy.
+
+The shared saved action selection may include Craft, Refine, and Arbitrage. Home city drives the
+ordinary production city fields; configured outer-Royal arbitrage scope and city sets remain
+intact. Focus is unavailable until a usable saved profile exists, but non-Focus choices continue.
+
+If a required station fee is missing/stale, Simple Mode stops before market HTTP and asks inline
+for the exact displayed Albion fee. If sparse AODP refresh still leaves a required side
+missing/stale/invalid, it offers an exact-side, exact-city user override inline. Both are persisted
+with user provenance and timestamp, then the full preflight is rebuilt before planning continues.
+
+The three trust presets are transparent bundles of existing V0.6 controls:
+
+- Fast / broad: 24-hour prices, stale-station allowance, no history refresh, unknown liquidity
+  accepted.
+- Careful: 4-hour prices, 24-hour station fees, history enabled, 20% historical-volume cap,
+  unknown liquidity accepted.
+- Strict: 2-hour prices, 12-hour station fees, history enabled, 10% historical-volume cap, at
+  least Moderate liquidity.
+
+Advanced Mode retains the independent action toggles, full route/city universe, transport and
+sale policies, precise freshness/threshold/cap controls, explicit two-stage preflight/run buttons,
+raw evidence counts, near misses, snapshots, and exports.
+
+Simple zero-action outcomes are not conflated: **Setup Required** is player-only station evidence;
+**Not Enough Data to Know** is unresolved required market evidence; **No Profit Found** is used
+only after complete price evidence produced fully priced candidates but no selectable allocation.
+Unsupported static recipes receive a separate supported-data explanation and are never presented
+as an Item Value field the player should guess.
 
 ## Inputs and bounded universe
 

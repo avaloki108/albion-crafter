@@ -599,3 +599,65 @@ def test_clean_catalog_cta_is_public_functional_and_does_not_refresh(
     assert requested == [True]
     assert refresh.calls == []
     view.close()
+
+
+def test_unknown_acid_item_value_is_labeled_static_and_not_user_enterable(
+    qt_app,
+    tmp_path,
+) -> None:
+    stack = _stack(tmp_path)
+    acid = Item(
+        "T5_POTION_ACID",
+        "Acid Potion",
+        5,
+        crafting_category="potion",
+    )
+    rare = Item("T5_ALCHEMY_RARE_DIREBEAR", "Direbear Remains", 5)
+    recipe = Recipe(
+        acid,
+        10,
+        (MaterialRequirement(rare.item_id, 1, False),),
+        item_value=None,
+        base_focus_cost=294,
+        provenance=Provenance.STATIC_GAME_DATA,
+        source_version="acid-pinned-fixture",
+    )
+    now = datetime.now(UTC)
+    stack.catalog.replace_all(
+        [
+            CatalogItem(acid, None, True, Provenance.STATIC_GAME_DATA, "acid-pinned-fixture"),
+            CatalogItem(rare, None, False, Provenance.STATIC_GAME_DATA, "acid-pinned-fixture"),
+        ],
+        [recipe],
+        CatalogImport(
+            "acid-fixture",
+            "memory://acid",
+            "acid-pinned-fixture",
+            now,
+            now,
+            2,
+            1,
+        ),
+    )
+    stack.resolver.repository.upsert_many(
+        (
+            _price(rare.item_id, 1, 1_000, now),
+            _price(acid.item_id, 1, 5_000, now),
+        )
+    )
+    stack.fees.set(
+        StationFeeObservation(
+            Region.AMERICAS.value,
+            "Bridgewatch",
+            StationType.ALCHEMIST_LAB,
+            500,
+            now,
+        )
+    )
+    view = stack.view(RecordingRefreshService())
+
+    assert "Unsupported static recipe" in view.data_banner.text()
+    assert "verified static Item Value" in view.whats_missing.text()
+    assert "not user-enterable" in view.whats_missing.text()
+    assert "pinned static source does not provide" in view.result.toPlainText()
+    view.close()

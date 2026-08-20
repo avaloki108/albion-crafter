@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "albion-crafter"
-version = "0.6.0"
+version = "0.6.1"
 description = "A trust-aware Albion Online crafting and refining profitability planner"
 readme = "README.md"
 requires-python = ">=3.12"

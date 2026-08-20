@@ -28,6 +28,27 @@ V0.6 derives the arbitrage universe only from supported recipe outputs. Static r
 bounded identity/display/filter metadata to a trade; arbitrage economics does not pretend to have
 a recipe or station.
 
+### V0.6.1 static-coverage audit
+
+V0.6.1 adds a bounded catalog-wide coverage classification and filter-aware matched counts. It
+uses the same conservative priority as production preflight: trusted/unambiguous recipe, known
+Item Value, known ingredient returnability, then verified station mapping. These are static-data
+coverage categories, not missing user settings.
+
+The audit of pinned commit `5cf2e8e9b7021f98683181fa5b0e3c64575978e4` found 9,232 recipes.
+Independent raw diagnostics found 1,281 null Item Values and 2,209 outputs without a station
+mapping; those sets overlap with each other and with 3,217 ambiguous upstream recipes. Under the
+mutually exclusive decision-coverage priority, 3,724 recipes are supported, 3,217 are ambiguous,
+1,035 first fail Item Value, and 1,256 first fail station mapping. Unknown returnability is zero
+for that import. Most unmapped station outputs have a blank crafting category and represent raw,
+artifact, cape/furniture-root, or other non-production records rather than station setup the
+player can repair.
+
+`T5_POTION_ACID` is mapped correctly to the Alchemist's Lab, but its pinned output record omits
+`@itemvalue`; its rare direbear ingredient omits Item Value too, so material-based derivation is
+not possible. The importer therefore preserves `None`—never zero—and the UI labels the recipe as
+unsupported upstream static evidence rather than asking the player to invent an Item Value.
+
 ## Current market observations
 
 Current prices come from the Albion Online Data Project regional `/api/v2/stats/prices` endpoint.

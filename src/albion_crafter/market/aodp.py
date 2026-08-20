@@ -61,7 +61,7 @@ def _default_transport(url: str, timeout: float) -> bytes:
         headers={
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
-            "User-Agent": "AlbionCrafter/0.6.0",
+            "User-Agent": "AlbionCrafter/0.6.1",
         },
     )
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS hosts

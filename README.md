@@ -1,4 +1,4 @@
-# Albion Crafter 0.6.0
+# Albion Crafter 0.6.1
 
 Albion Crafter is a cross-platform PySide6 desktop decision aid for Albion Online production and
 market analysis. Find Me Money can now allocate one bankroll across **crafting, refining, and
@@ -9,6 +9,27 @@ The application never reads or controls the Albion client, moves items, uses Foc
 refines, or places market orders.
 
 ## Primary workflows
+
+### Find Me Money — Simple Mode
+
+The application opens on the normal player workflow: enter bankroll, choose a home city, and
+press **FIND ME MONEY**. One explicit action performs the network-free preflight and then the
+existing sparse refresh, Craft/Refine/Arbitrage evaluation, shared-capacity optimization,
+validation, and immutable-snapshot pipeline. Startup remains offline.
+
+Simple Mode searches every action kind enabled by the saved V0.6 controls. It asks inline only
+for genuinely manual blockers: current displayed station fees or required Albion prices that
+AODP could not provide. Focus is disabled, without blocking non-Focus planning, until a usable
+profile exists. Fast, Careful, and Strict presets expose their freshness/history/liquidity
+tradeoffs in player language. Advanced Mode retains all V0.6 inputs, preflight evidence, near
+misses, optimizer diagnostics, and export/history controls.
+
+Zero-action results are deliberately distinct:
+
+- **Setup Required** means exact player-observed evidence must be entered.
+- **Not Enough Data to Know** means required market observations are missing, stale, or invalid.
+- **No Profit Found** means fully priced opportunities were checked but none survived the current
+  bankroll and policies.
 
 ### Production Calculator
 
@@ -35,6 +56,10 @@ actions maximizes expected profit?
   diversification or recycles expected revenue inside the plan.
 - The table and **DO THIS** detail use immutable plan evidence and distinguish Craft, Refine, and
   Arbitrage without inventing a station, RRR, or FCE for a trade.
+
+Player-facing recipe counts are filter-aware. Catalog coverage also separates supported recipes
+from conservative static-data exclusions, so unsupported roots and incomplete upstream Item Value
+records no longer look like user setup tasks.
 
 ## Arbitrage policy
 
