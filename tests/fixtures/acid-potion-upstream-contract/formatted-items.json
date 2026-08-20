@@ -1,0 +1,10 @@
+[
+  {"UniqueName": "T5_POTION_ACID", "LocalizedNames": {"EN-US": "Acid Potion"}},
+  {
+    "UniqueName": "T5_ALCHEMY_RARE_DIREBEAR",
+    "LocalizedNames": {"EN-US": "Fine Spirit Paws"}
+  },
+  {"UniqueName": "T5_TEASEL", "LocalizedNames": {"EN-US": "Dragon Teasel"}},
+  {"UniqueName": "T4_BURDOCK", "LocalizedNames": {"EN-US": "Crenellated Burdock"}},
+  {"UniqueName": "T4_MILK", "LocalizedNames": {"EN-US": "Goat's Milk"}}
+]

@@ -5,6 +5,7 @@ from datetime import datetime
 
 from albion_crafter.core.actionability import ActionabilityReason
 from albion_crafter.core.models import Recipe
+from albion_crafter.market.history import MarketHistoryInterval
 from albion_crafter.market.models import (
     FreshnessPolicy,
     MarketPrice,
@@ -32,6 +33,7 @@ class PricingIndex:
         self,
         market_prices: Iterable[MarketPrice],
         overrides: Iterable[UserPriceOverride] = (),
+        history: Iterable[MarketHistoryInterval] = (),
     ) -> None:
         self.market_prices: dict[MarketKey, MarketPrice] = {
             (row.region, row.item_id, row.city, row.quality): row for row in market_prices
@@ -39,6 +41,10 @@ class PricingIndex:
         self.overrides: dict[OverrideKey, UserPriceOverride] = {
             (row.region, row.item_id, row.city, row.quality, row.side): row for row in overrides
         }
+        self.history: dict[MarketKey, list[MarketHistoryInterval]] = {}
+        for row in history:
+            key = (row.region, row.item_id, row.city, row.quality)
+            self.history.setdefault(key, []).append(row)
 
     def resolve(
         self,
@@ -150,6 +156,7 @@ class PricingIndex:
     ) -> PriceEvidence:
         override = self.overrides.get((region, item_id, city, quality, side))
         record = self.market_prices.get((region, item_id, city, quality))
+        history = self.history.get((region, item_id, city, quality), ())
         selection = resolve_price(
             item_id=item_id,
             city=city,
@@ -160,6 +167,7 @@ class PricingIndex:
             as_of=as_of,
             market_price=record,
             override=override,
+            history=history,
         )
         return self._to_evidence(selection)
 
@@ -176,6 +184,21 @@ class PricingIndex:
             fetched_at=line.fetched_at,
             provenance=line.provenance,
             freshness=line.freshness,
+            source=line.source,
+            confidence=line.confidence,
+            current_price=line.current_price,
+            current_timestamp=line.current_timestamp,
+            current_fetched_at=line.current_fetched_at,
+            current_freshness=line.current_freshness,
+            historical_reference_price=line.historical_reference_price,
+            historical_days_used=line.historical_days_used,
+            historical_total_volume=line.historical_total_volume,
+            historical_avg_daily_volume_7d=line.historical_avg_daily_volume_7d,
+            historical_avg_daily_volume_30d=line.historical_avg_daily_volume_30d,
+            historical_median_price=line.historical_median_price,
+            historical_volatility=line.historical_volatility,
+            historical_latest_bucket=line.historical_latest_bucket,
+            historical_outliers_ignored=line.historical_outliers_ignored,
         )
 
     @staticmethod
@@ -191,6 +214,21 @@ class PricingIndex:
             fetched_at=line.fetched_at,
             provenance=line.provenance,
             freshness=line.freshness,
+            source=line.source,
+            confidence=line.confidence,
+            current_price=line.current_price,
+            current_timestamp=line.current_timestamp,
+            current_fetched_at=line.current_fetched_at,
+            current_freshness=line.current_freshness,
+            historical_reference_price=line.historical_reference_price,
+            historical_days_used=line.historical_days_used,
+            historical_total_volume=line.historical_total_volume,
+            historical_avg_daily_volume_7d=line.historical_avg_daily_volume_7d,
+            historical_avg_daily_volume_30d=line.historical_avg_daily_volume_30d,
+            historical_median_price=line.historical_median_price,
+            historical_volatility=line.historical_volatility,
+            historical_latest_bucket=line.historical_latest_bucket,
+            historical_outliers_ignored=line.historical_outliers_ignored,
         )
 
     @staticmethod

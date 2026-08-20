@@ -64,6 +64,7 @@ class OpportunityScannerService:
         profile = CraftingSkillProfile(available_focus=constraints.available_focus)
         history_by_key: dict[tuple, tuple] = {}
         history_status_by_key: dict[tuple, str] = {}
+        price_history = ()
         database_reads = 0
 
         def cancelled_snapshot() -> ScanSnapshot:
@@ -81,6 +82,7 @@ class OpportunityScannerService:
                 constraints,
                 history_by_key=history_by_key,
                 history_status_by_key=history_status_by_key,
+                price_history=price_history,
                 as_of=scan_time,
                 progress=progress,
                 cancellation=cancellation,
@@ -162,6 +164,43 @@ class OpportunityScannerService:
         if self._is_cancelled(cancellation):
             return cancelled_snapshot()
 
+        if self.history is not None and item_ids:
+            self._report(
+                progress,
+                "price-history",
+                "Loading cached daily history for missing SELL-price fallback...",
+            )
+            daily_rows = self.history.list_for_items(
+                constraints.region,
+                item_ids,
+                market_cities,
+                1,
+                scan_time - timedelta(days=30),
+                time_scale=HistoryTimeScale.DAILY,
+            )
+            database_reads += self._chunk_count(
+                len(item_ids),
+                fixed_parameters=4 + len(market_cities),
+            )
+            if constraints.output_quality != 1 and output_ids:
+                daily_rows.extend(
+                    self.history.list_for_items(
+                        constraints.region,
+                        output_ids,
+                        constraints.sell_cities,
+                        constraints.output_quality,
+                        scan_time - timedelta(days=30),
+                        time_scale=HistoryTimeScale.DAILY,
+                    )
+                )
+                database_reads += self._chunk_count(
+                    len(output_ids),
+                    fixed_parameters=4 + len(constraints.sell_cities),
+                )
+            price_history = tuple(daily_rows)
+            if self._is_cancelled(cancellation):
+                return cancelled_snapshot()
+
         if self.history is not None and output_ids:
             self._report(progress, "history", "Loading optional cached market history...")
             intervals = self.history.list_for_outputs(
@@ -237,6 +276,7 @@ class OpportunityScannerService:
             constraints,
             history_by_key=history_by_key,
             history_status_by_key=history_status_by_key,
+            price_history=price_history,
             as_of=scan_time,
             progress=progress,
             cancellation=cancellation,

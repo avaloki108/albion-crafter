@@ -146,6 +146,49 @@ def test_unknown_station_fee_is_visible_but_never_actionable() -> None:
     }
 
 
+def test_scanner_calculates_estimated_profit_from_cached_daily_sell_history() -> None:
+    recipe = _recipe()
+    history = tuple(
+        MarketHistoryInterval(
+            item_id=recipe.output.item_id,
+            city="Bridgewatch",
+            quality=1,
+            region=Region.AMERICAS,
+            observed_at=NOW - timedelta(days=day),
+            item_count=25,
+            average_price=1_000 + day,
+            time_scale=HistoryTimeScale.DAILY,
+            fetched_at=NOW,
+        )
+        for day in range(1, 8)
+    )
+    snapshot = OpportunityScanner().scan(
+        (recipe,),
+        (_price(recipe.materials[0].item_id, "Lymhurst", 100),),
+        (),
+        (_fee(),),
+        CraftingSkillProfile(),
+        _constraints(actionable_only=True),
+        price_history=history,
+        as_of=NOW,
+    )
+
+    assert len(snapshot.opportunities) == 1
+    opportunity = snapshot.opportunities[0]
+    assert opportunity.profit is not None
+    assert opportunity.pricing.live_price_count == 1
+    assert opportunity.pricing.historical_estimate_count == 1
+    output = next(line for line in opportunity.pricing.evidence if line.role == "output")
+    assert output.source.value == "HISTORICAL_ESTIMATE"
+    estimate_reasons = [
+        reason
+        for reason in opportunity.calculation.actionability.reasons
+        if reason.code is ReasonCode.HISTORICAL_PRICE_ESTIMATE
+    ]
+    assert len(estimate_reasons) == 1
+    assert estimate_reasons[0].severity is ReasonSeverity.WARNING
+
+
 def test_scanner_capital_includes_sell_order_setup_cash_and_drives_filter() -> None:
     low = _scan(fees=(_fee(displayed_fee=100),)).opportunities[0]
     high = _scan(fees=(_fee(displayed_fee=900),)).opportunities[0]

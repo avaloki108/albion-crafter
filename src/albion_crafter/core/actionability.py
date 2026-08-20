@@ -37,6 +37,7 @@ class ReasonCode(StrEnum):
     UNSUPPORTED_OUTPUT_QUALITY = "unsupported_output_quality"
     UNKNOWN_LIQUIDITY = "unknown_liquidity"
     LOW_LIQUIDITY = "low_liquidity"
+    HISTORICAL_PRICE_ESTIMATE = "historical_price_estimate"
     TOP_OF_BOOK_DEPTH_UNMODELED = "top_of_book_depth_unmodeled"
     TRANSPORT_ASSUMPTION = "transport_assumption"
 

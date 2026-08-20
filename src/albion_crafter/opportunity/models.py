@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from albion_crafter.core.actionability import ActionabilityReason
 from albion_crafter.core.models import CraftResult, Recipe, SaleMethod
 from albion_crafter.core.provenance import Provenance
+from albion_crafter.market.estimation import MarketPriceSource, PriceConfidence
 from albion_crafter.market.liquidity import LiquidityLevel
 from albion_crafter.market.models import Freshness, Region
 
@@ -130,6 +131,21 @@ class PriceEvidence:
     fetched_at: datetime | None
     provenance: Provenance
     freshness: Freshness
+    source: MarketPriceSource
+    confidence: PriceConfidence
+    current_price: float | None = None
+    current_timestamp: datetime | None = None
+    current_fetched_at: datetime | None = None
+    current_freshness: Freshness = Freshness.UNKNOWN
+    historical_reference_price: float | None = None
+    historical_days_used: int = 0
+    historical_total_volume: int = 0
+    historical_avg_daily_volume_7d: float | None = None
+    historical_avg_daily_volume_30d: float | None = None
+    historical_median_price: float | None = None
+    historical_volatility: float | None = None
+    historical_latest_bucket: datetime | None = None
+    historical_outliers_ignored: int = 0
 
     def age(self, as_of: datetime) -> timedelta | None:
         if self.observation_timestamp is None:
@@ -163,6 +179,22 @@ class OpportunityPricingSnapshot:
         if self.oldest_required_timestamp is None:
             return None
         return as_of - self.oldest_required_timestamp
+
+    @property
+    def historical_estimate_count(self) -> int:
+        return sum(
+            line.source is MarketPriceSource.HISTORICAL_ESTIMATE
+            and line.role != "returned_material_informational"
+            for line in self.evidence
+        )
+
+    @property
+    def live_price_count(self) -> int:
+        return sum(
+            line.source is MarketPriceSource.CURRENT
+            and line.role != "returned_material_informational"
+            for line in self.evidence
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -426,16 +426,19 @@ class CalculatorView(QWidget):
         self.fce_evidence.setWordWrap(True)
         self.fce_evidence.setObjectName("muted")
         evidence_layout.addWidget(self.fce_evidence)
-        self.material_table = QTableWidget(0, 7)
+        self.material_table = QTableWidget(0, 10)
         self.material_table.setHorizontalHeaderLabels(
             (
                 "Price line",
                 "Total needed for selected batches",
                 "Returnable",
                 "Unit price",
+                "Resolved source",
+                "Confidence",
                 "Provenance",
                 "Observed (UTC)",
                 "Freshness",
+                "7d volume/day",
             )
         )
         self.material_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -815,7 +818,19 @@ class CalculatorView(QWidget):
     ) -> None:
         issue_count = len(result.actionability.blocking_reasons)
         oldest = age_text(snapshot.oldest_timestamp)
-        if result.actionability.is_actionable:
+        estimate_count = snapshot.historical_estimate_count
+        if result.actionability.is_actionable and estimate_count:
+            self.data_banner.setText(
+                f"Estimated profitability · {snapshot.live_price_count} live price(s), "
+                f"{estimate_count} historical SELL estimate(s). Oldest evidence: {oldest}. "
+                "Open details for confidence and volume."
+            )
+            self._set_banner_state("aging")
+            self.whats_missing.setText(
+                "WHAT'S MISSING · no required value is missing; historical estimates are "
+                "clearly labeled advisory evidence"
+            )
+        elif result.actionability.is_actionable:
             self.data_banner.setText(
                 f"Ready to use · required prices and station fee meet saved freshness rules. "
                 f"Oldest required price: {oldest}."
@@ -872,8 +887,8 @@ class CalculatorView(QWidget):
             f"{result.actionability.status.value} · ruleset {result.ruleset_id} · "
             f"static source {source_version}{import_text}\n"
             f"Oldest relevant price: {oldest} · freshness: {snapshot.freshness.value} · "
-            f"top-of-book estimate\nStation: {station_text}\nFCE: {fce_text}"
-            + (f"\n{reasons}" if reasons else "")
+            f"{snapshot.live_price_count} live / {estimate_count} historical estimate(s)\n"
+            f"Station: {station_text}\nFCE: {fce_text}" + (f"\n{reasons}" if reasons else "")
         )
         self.recipe_summary.setText(
             f"{recipe.output.display_name} · {recipe.output.item_id} · "
@@ -903,6 +918,8 @@ class CalculatorView(QWidget):
                     else "No"
                 ),
                 money(line.price if line else None),
+                line.source.value if line else "MISSING",
+                line.confidence.value if line else "MISSING",
                 line.provenance.value if line else "unknown",
                 (
                     line.observation_timestamp.isoformat()
@@ -910,6 +927,11 @@ class CalculatorView(QWidget):
                     else "Unknown"
                 ),
                 line.freshness.value if line else "Unknown",
+                (
+                    f"{line.historical_avg_daily_volume_7d:,.1f}"
+                    if line and line.historical_avg_daily_volume_7d is not None
+                    else "—"
+                ),
             )
             for column, value in enumerate(values):
                 self.material_table.setItem(row, column, QTableWidgetItem(value))
@@ -919,6 +941,8 @@ class CalculatorView(QWidget):
             str(recipe.output_quantity * self.quantity.value()),
             "N/A",
             money(output.price if output else None),
+            output.source.value if output else "MISSING",
+            output.confidence.value if output else "MISSING",
             output.provenance.value if output else "unknown",
             (
                 output.observation_timestamp.isoformat()
@@ -926,6 +950,11 @@ class CalculatorView(QWidget):
                 else "Unknown"
             ),
             output.freshness.value if output else "Unknown",
+            (
+                f"{output.historical_avg_daily_volume_7d:,.1f}"
+                if output and output.historical_avg_daily_volume_7d is not None
+                else "—"
+            ),
         )
         for column, value in enumerate(output_values):
             self.material_table.setItem(len(recipe.materials), column, QTableWidgetItem(value))
@@ -988,7 +1017,9 @@ class CalculatorView(QWidget):
         else:
             profit_text = "Needs calculation data"
         self.summary_labels["final_profit"].setText(profit_text)
-        if result.profit is not None and result.actionability.is_actionable:
+        if result.profit is not None and ReasonCode.HISTORICAL_PRICE_ESTIMATE in reason_codes:
+            profit_hint = "ESTIMATED — uses clearly labeled AODP historical SELL evidence"
+        elif result.profit is not None and result.actionability.is_actionable:
             profit_hint = "Includes expected material returns"
         elif result.profit is not None:
             profit_hint = "Estimate only — review data status"
@@ -1063,6 +1094,7 @@ class CalculatorView(QWidget):
             self.quality.value(),
             material_side=MarketSide.SELL_ORDER,
             output_side=self._output_side(sale_method),
+            maximum_price_age=timedelta(hours=int(self._setting("max_market_age_hours"))),
         )
         try:
             service = self._service_for_region(region)
@@ -1094,7 +1126,10 @@ class CalculatorView(QWidget):
             service = (
                 self._refresh_service_factory(region)
                 if self._refresh_service_factory is not None
-                else RecipePriceRefreshService(self.resolver.repository)
+                else RecipePriceRefreshService(
+                    self.resolver.repository,
+                    history_repository=self.resolver.history,
+                )
             )
             self._region_refresh_services[region] = service
         return service
@@ -1137,6 +1172,12 @@ class CalculatorView(QWidget):
             text = (
                 f"Refresh cancelled: {available:,}/{requested:,} required prices are available. "
                 "Successful rows already saved were retained; totals were recalculated."
+            )
+        elif result.is_complete and getattr(result, "historical_estimates_available", 0):
+            text = (
+                f"Refresh complete with estimates: {available:,}/{requested:,} required prices "
+                f"available; {result.historical_estimates_available:,} resolved from AODP daily "
+                "SELL history. Totals recalculated as ESTIMATED."
             )
         elif result.is_complete:
             text = (

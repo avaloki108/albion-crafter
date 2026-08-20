@@ -81,12 +81,7 @@ class CachedHistoryRefreshResult:
 
 
 class CachedOutputHistoryService:
-    """Fetch and cache only shortlisted market-capacity history.
-
-    Craft/refine material-input history is intentionally not part of this API.
-    Callers pass a bounded production-output/arbitrage-market shortlist produced
-    after current-price evaluation.
-    """
+    """Fetch and cache a caller-bounded set of AODP sell-history series."""
 
     def __init__(
         self,
@@ -120,12 +115,38 @@ class CachedOutputHistoryService:
         is_cancelled: CancellationCheck | None = None,
         on_progress: HistoryProgressCallback | None = None,
     ) -> CachedHistoryRefreshResult:
+        """Backward-compatible name for refreshing bounded output history."""
+
+        return self.refresh_market_items(
+            output_item_ids,
+            start_date=start_date,
+            end_date=end_date,
+            cities=sell_cities,
+            qualities=qualities,
+            time_scale=time_scale,
+            is_cancelled=is_cancelled,
+            on_progress=on_progress,
+        )
+
+    def refresh_market_items(
+        self,
+        item_ids: Sequence[str],
+        *,
+        start_date: date,
+        end_date: date,
+        cities: Sequence[str],
+        qualities: Sequence[int] = (1,),
+        time_scale: HistoryTimeScale = HistoryTimeScale.DAILY,
+        is_cancelled: CancellationCheck | None = None,
+        on_progress: HistoryProgressCallback | None = None,
+    ) -> CachedHistoryRefreshResult:
         """Persist each successful batch, then record complete/partial coverage."""
-        item_ids = _deduplicate_item_ids(output_item_ids)
-        if any(not isinstance(city, str) or not city.strip() for city in sell_cities):
+
+        item_ids = _deduplicate_item_ids(item_ids)
+        if any(not isinstance(city, str) or not city.strip() for city in cities):
             raise ValueError("history cities must contain non-empty strings")
         city_map: dict[str, str] = {}
-        for city in sell_cities:
+        for city in cities:
             clean = city.strip()
             city_map.setdefault(_normalize_city(clean), clean)
         cities = tuple(city_map.values())

@@ -4,7 +4,7 @@ import json
 import math
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -29,7 +29,7 @@ RAW_ITEMS_URL = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/{version
 FORMATTED_ITEMS_URL = (
     "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/{version}/formatted/items.json"
 )
-IMPORTER_VERSION = 3
+IMPORTER_VERSION = 4
 DEFAULT_SENTINEL_IDS = frozenset(
     {
         "T4_MAIN_SWORD",
@@ -160,6 +160,7 @@ class StaticCatalogParser:
         canonical_by_raw_id: dict[str, str] = {}
         for _, record in records:
             raw_id = str(record["@uniquename"])
+            self._validate_item_numeric_fields(raw_id, record, structural_errors)
             canonical_id = self._canonical_id(raw_id, record.get("@enchantmentlevel"))
             previous = canonical_by_raw_id.setdefault(raw_id, canonical_id)
             if previous != canonical_id:
@@ -185,7 +186,10 @@ class StaticCatalogParser:
         for item_type, record in records:
             raw_id = str(record["@uniquename"])
             base_id = canonical_by_raw_id[raw_id]
-            base_enchantment = _optional_int(record.get("@enchantmentlevel")) or 0
+            base_enchantment = (
+                self._bounded_optional_int(record.get("@enchantmentlevel"), minimum=0, maximum=4)
+                or 0
+            )
             base_item = self._make_item(
                 base_id,
                 record,
@@ -212,7 +216,12 @@ class StaticCatalogParser:
             for enchantment in _as_list(enchantments.get("enchantment")):
                 if not isinstance(enchantment, dict):
                     continue
-                level = _optional_int(enchantment.get("@enchantmentlevel"))
+                raw_level = enchantment.get("@enchantmentlevel")
+                level = self._bounded_optional_int(raw_level, minimum=1, maximum=4)
+                if raw_level not in (None, "") and level is None:
+                    structural_errors.append(
+                        f"Item {base_id} has invalid enchantment level {raw_level!r}."
+                    )
                 if not level:
                     continue
                 variant_id = self._canonical_id(raw_id, level)
@@ -271,33 +280,34 @@ class StaticCatalogParser:
                 )
                 skipped_malformed += 1
                 continue
-            direct_value = direct_item_values.get(output.item_id)
-            if direct_value is None:
-                material_value = self._derived_item_value(materials, direct_item_values)
-                direct_value = (
-                    material_value / output_quantity if material_value is not None else None
-                )
             recipes.append(
                 Recipe(
                     output=output,
                     output_quantity=output_quantity,
                     materials=materials,
-                    item_value=direct_value,
+                    item_value=direct_item_values.get(output.item_id),
                     base_focus_cost=base_focus,
                     recipe_ambiguous=ambiguous,
                     provenance=Provenance.STATIC_GAME_DATA,
                     source_version=source_version,
                 )
             )
-            existing = item_records[output.item_id]
-            item_records[output.item_id] = CatalogItem(
+            unknown_returnability += sum(material.returnable is None for material in materials)
+
+        resolved_item_values = self._resolve_item_values(recipes, direct_item_values)
+        recipes = [
+            replace(recipe, item_value=resolved_item_values.get(recipe.output.item_id))
+            for recipe in recipes
+        ]
+        for recipe in recipes:
+            existing = item_records[recipe.output.item_id]
+            item_records[recipe.output.item_id] = CatalogItem(
                 item=existing.item,
-                item_value=direct_value,
+                item_value=recipe.item_value,
                 craftable=True,
                 provenance=existing.provenance,
                 source_version=existing.source_version,
             )
-            unknown_returnability += sum(material.returnable is None for material in materials)
 
         diagnostics = ParseDiagnostics(
             ingredient_count=sum(len(recipe.materials) for recipe in recipes),
@@ -342,6 +352,34 @@ class StaticCatalogParser:
         return raw_id
 
     @staticmethod
+    def _bounded_optional_int(
+        value: Any,
+        *,
+        minimum: int,
+        maximum: int,
+    ) -> int | None:
+        parsed = _optional_int(value)
+        return parsed if parsed is not None and minimum <= parsed <= maximum else None
+
+    @classmethod
+    def _validate_item_numeric_fields(
+        cls,
+        item_id: str,
+        record: dict[str, Any],
+        errors: list[str],
+    ) -> None:
+        for field, label, minimum, maximum in (
+            ("@tier", "tier", 1, 8),
+            ("@enchantmentlevel", "enchantment level", 0, 4),
+            ("@maxqualitylevel", "maximum quality", 1, 5),
+        ):
+            raw_value = record.get(field)
+            if raw_value in (None, ""):
+                continue
+            if cls._bounded_optional_int(raw_value, minimum=minimum, maximum=maximum) is None:
+                errors.append(f"Item {item_id} has invalid {label} {raw_value!r}.")
+
+    @staticmethod
     def _display_name(item_id: str, names: dict[str, str], enchantment: int) -> str:
         if item_id in names:
             return names[item_id]
@@ -365,12 +403,14 @@ class StaticCatalogParser:
         return Item(
             item_id=item_id,
             display_name=self._display_name(item_id, names, enchantment),
-            tier=_optional_int(record.get("@tier")),
+            tier=self._bounded_optional_int(record.get("@tier"), minimum=1, maximum=8),
             enchantment=enchantment,
             category=str(record.get("@shopcategory") or item_type),
             subcategory=str(record.get("@shopsubcategory1") or ""),
             crafting_category=str(record.get("@craftingcategory") or ""),
-            max_quality=_optional_int(record.get("@maxqualitylevel")),
+            max_quality=self._bounded_optional_int(
+                record.get("@maxqualitylevel"), minimum=1, maximum=5
+            ),
         )
 
     @staticmethod
@@ -406,10 +446,15 @@ class StaticCatalogParser:
             maximum_return = row.get("@maxreturnamount")
             if maximum_return is None:
                 returnable: bool | None = True
-            elif _optional_float(maximum_return) == 0:
-                returnable = False
             else:
-                returnable = None
+                parsed_maximum_return = cls._finite_optional_float(maximum_return)
+                if parsed_maximum_return is None or parsed_maximum_return < 0:
+                    errors.append(
+                        f"Recipe {output_item_id} ingredient {position} has invalid maximum "
+                        f"return amount {maximum_return!r}."
+                    )
+                    continue
+                returnable = False if parsed_maximum_return == 0 else None
             raw_id = str(row["@uniquename"])
             canonical_id = canonical_by_raw_id.get(
                 raw_id, cls._canonical_id(raw_id, row.get("@enchantmentlevel"))
@@ -430,13 +475,52 @@ class StaticCatalogParser:
     @staticmethod
     def _derived_item_value(
         materials: tuple[MaterialRequirement, ...],
-        direct_item_values: dict[str, float],
+        known_item_values: dict[str, float],
     ) -> float | None:
-        if any(material.item_id not in direct_item_values for material in materials):
-            return None
-        return sum(
-            direct_item_values[material.item_id] * material.quantity for material in materials
-        )
+        total = 0.0
+        for material in materials:
+            value = known_item_values.get(material.item_id)
+            if value is None:
+                if material.returnable is False:
+                    # Albion marks catalysts/artifacts with maxreturnamount=0. When such an
+                    # input has no direct Item Value, it contributes zero to the output's
+                    # recipe-derived Item Value; it must still be bought at its market price.
+                    continue
+                return None
+            total += value * material.quantity
+        return total
+
+    @classmethod
+    def _resolve_item_values(
+        cls,
+        recipes: list[Recipe],
+        direct_item_values: dict[str, float],
+    ) -> dict[str, float]:
+        """Resolve missing Item Values through the recipe graph to a fixed point.
+
+        Direct ``@itemvalue`` attributes always win. Many consumables omit that attribute and
+        depend on intermediate craftables (bread, alcohol, extracts) whose values must be derived
+        first, so a single pass is insufficient.
+        """
+
+        resolved = dict(direct_item_values)
+        pending = {
+            recipe.output.item_id: recipe
+            for recipe in recipes
+            if recipe.output.item_id not in resolved
+        }
+        while pending:
+            newly_resolved: dict[str, float] = {}
+            for item_id, recipe in pending.items():
+                batch_value = cls._derived_item_value(recipe.materials, resolved)
+                if batch_value is not None:
+                    newly_resolved[item_id] = batch_value / recipe.output_quantity
+            if not newly_resolved:
+                break
+            resolved.update(newly_resolved)
+            for item_id in newly_resolved:
+                pending.pop(item_id)
+        return resolved
 
 
 class StaticCatalogValidator:
@@ -455,6 +539,12 @@ class StaticCatalogValidator:
         if len(item_ids) != len(catalog.items):
             hard.append("Candidate catalog contains duplicate item IDs.")
         for record in catalog.items:
+            if record.item.tier is not None and not 1 <= record.item.tier <= 8:
+                hard.append(f"Item {record.item.item_id} has an invalid tier.")
+            if not 0 <= record.item.enchantment <= 4:
+                hard.append(f"Item {record.item.item_id} has an invalid enchantment level.")
+            if record.item.max_quality is not None and not 1 <= record.item.max_quality <= 5:
+                hard.append(f"Item {record.item.item_id} has an invalid maximum quality.")
             if record.item_value is not None and (
                 not math.isfinite(record.item_value) or record.item_value < 0
             ):

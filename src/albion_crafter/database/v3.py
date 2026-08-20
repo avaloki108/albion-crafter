@@ -368,7 +368,7 @@ class MarketHistoryRepository:
                 (_serialize_datetime(newest_fetch - self.retention),),
             )
 
-    def list_for_outputs(
+    def list_for_items(
         self,
         region: Region,
         item_ids: Iterable[str],
@@ -407,6 +407,27 @@ class MarketHistoryRepository:
                     ).fetchall()
                 )
         return [self._interval_from_row(row) for row in rows]
+
+    def list_for_outputs(
+        self,
+        region: Region,
+        item_ids: Iterable[str],
+        cities: Iterable[str],
+        quality: int,
+        since: datetime,
+        *,
+        time_scale: HistoryTimeScale = HistoryTimeScale.HOURLY,
+    ) -> list[MarketHistoryInterval]:
+        """Backward-compatible output-oriented name for the generic history query."""
+
+        return self.list_for_items(
+            region,
+            item_ids,
+            cities,
+            quality,
+            since,
+            time_scale=time_scale,
+        )
 
     def set_coverage(self, coverage: HistoryCoverage) -> None:
         with self.database.connection() as connection:

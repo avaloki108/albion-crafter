@@ -1,0 +1,57 @@
+{
+  "items": {
+    "consumableitem": {
+      "@uniquename": "T5_POTION_ACID",
+      "@slottype": "potion",
+      "@weight": "0.42",
+      "@shopcategory": "consumables",
+      "@shopsubcategory1": "potions",
+      "@tier": "5",
+      "@craftingcategory": "potion",
+      "craftingrequirements": {
+        "@time": "1.343",
+        "@amountcrafted": "10",
+        "@craftingfocus": "294",
+        "craftresource": [
+          {
+            "@uniquename": "T5_ALCHEMY_RARE_DIREBEAR",
+            "@count": "1",
+            "@maxreturnamount": "0"
+          },
+          {"@uniquename": "T5_TEASEL", "@count": "48"},
+          {"@uniquename": "T4_BURDOCK", "@count": "24"},
+          {"@uniquename": "T4_MILK", "@count": "12"}
+        ]
+      }
+    },
+    "simpleitem": [
+      {
+        "@uniquename": "T5_ALCHEMY_RARE_DIREBEAR",
+        "@tier": "5",
+        "@shopcategory": "crafting",
+        "@shopsubcategory1": "alchemy"
+      },
+      {
+        "@uniquename": "T5_TEASEL",
+        "@tier": "5",
+        "@itemvalue": "40",
+        "@shopcategory": "farming",
+        "@shopsubcategory1": "herbgarden"
+      },
+      {
+        "@uniquename": "T4_BURDOCK",
+        "@tier": "4",
+        "@itemvalue": "40",
+        "@shopcategory": "farming",
+        "@shopsubcategory1": "herbgarden"
+      },
+      {
+        "@uniquename": "T4_MILK",
+        "@tier": "4",
+        "@itemvalue": "40",
+        "@shopcategory": "farming",
+        "@shopsubcategory1": "pasture"
+      }
+    ]
+  }
+}

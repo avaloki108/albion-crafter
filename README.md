@@ -51,8 +51,11 @@ Zero-action results are deliberately distinct:
 ### Production Calculator
 
 The calculator evaluates one supported craft or refining recipe. It refreshes only that recipe's
-required material/output keys after an explicit button press. Taxes, returns, cash timing, Focus
-mapping, timestamps, provenance, and actionability evidence remain available in the detail view.
+required current material/output keys after an explicit button press, then batches only unresolved
+or stale required SELL keys through AODP daily history. A robust, volume-aware historical estimate
+can complete the economics, but it is labeled `HISTORICAL_ESTIMATE` with confidence and volume;
+BUY prices never use sell history. Taxes, returns, cash timing, Focus mapping, timestamps,
+provenance, and actionability evidence remain available in the detail view.
 
 ### Find Me Money
 
@@ -149,13 +152,17 @@ Python 3.12 or newer is required.
 ```bash
 uv sync --extra dev
 uv run albion-crafter-update-data
+uv run albion-crafter-inspect-item T5_POTION_ACID
+uv run albion-crafter-inspect-market T5_POTION_ACID --city Bridgewatch --refresh
 uv run albion-crafter
 ```
 
 Startup performs no HTTP. Import static data explicitly with `albion-crafter-update-data` or
 **Update Static Game Data**, then use **Market Data → REFRESH ROYAL MARKETS** when broad current
 market coverage is wanted. The maintained static source is
-[`ao-data/ao-bin-dumps`](https://github.com/ao-data/ao-bin-dumps). To isolate local state:
+[`ao-data/ao-bin-dumps`](https://github.com/ao-data/ao-bin-dumps). The item-inspection command
+prints the active catalog record, recipe, provenance, and matching cached raw-source evidence for
+one canonical ID. To isolate local state:
 
 ```bash
 ALBION_CRAFTER_DATA_DIR=/tmp/albion-crafter-dev uv run albion-crafter

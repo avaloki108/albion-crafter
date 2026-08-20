@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
 
@@ -23,7 +23,8 @@ from albion_crafter.database.database import (
     PriceOverrideRepository,
     SettingsRepository,
 )
-from albion_crafter.database.v3 import StationFeeRepository
+from albion_crafter.database.v3 import MarketHistoryRepository, StationFeeRepository
+from albion_crafter.market.history import HistoryTimeScale, MarketHistoryInterval
 from albion_crafter.market.models import MarketPrice, MarketSide, Region
 from albion_crafter.market.pricing import PriceResolver
 from albion_crafter.market.recipe_refresh import RecipePriceAvailabilityStatus
@@ -326,6 +327,50 @@ def test_all_economic_controls_recalculate_only_from_cache_and_never_autorefresh
 
     view._search_catalog()
     assert refresh.calls == []
+    view.close()
+
+
+def test_historical_sell_fallback_is_visibly_estimated_with_confidence_and_volume(
+    qt_app,
+    tmp_path,
+) -> None:
+    stack = _stack(tmp_path)
+    database = stack.resolver.repository.database
+    with database.connection() as connection:
+        connection.execute(
+            "DELETE FROM market_prices WHERE item_id=? AND city=? AND quality=?",
+            (stack.recipe.output.item_id, "Bridgewatch", 1),
+        )
+    history = MarketHistoryRepository(database)
+    now = datetime.now(UTC)
+    history.upsert_many(
+        MarketHistoryInterval(
+            item_id=stack.recipe.output.item_id,
+            city="Bridgewatch",
+            quality=1,
+            region=Region.AMERICAS,
+            observed_at=now - timedelta(days=day),
+            item_count=20,
+            average_price=2_500,
+            time_scale=HistoryTimeScale.DAILY,
+            fetched_at=now,
+        )
+        for day in range(1, 8)
+    )
+    stack.resolver.resolver = PriceResolver(stack.resolver.repository, history=history)
+
+    view = stack.view(RecordingRefreshService())
+
+    assert view._current_result is not None
+    assert view._current_result.profit is not None
+    assert "Estimated profitability" in view.data_banner.text()
+    assert "1 live price(s), 1 historical SELL estimate(s)" in view.data_banner.text()
+    output_row = len(stack.recipe.materials)
+    assert view.material_table.item(output_row, 4).text() == "HISTORICAL_ESTIMATE"
+    assert view.material_table.item(output_row, 5).text() == "HIGH"
+    assert view.material_table.item(output_row, 9).text() != "—"
+    assert "1 live / 1 historical estimate(s)" in view.truth_detail.text()
+    assert "ESTIMATED" in view.summary_hints["final_profit"].text()
     view.close()
 
 
@@ -633,38 +678,46 @@ def test_clean_catalog_cta_is_public_functional_and_does_not_refresh(
     view.close()
 
 
-def test_unknown_acid_item_value_is_labeled_static_and_not_user_enterable(
+def test_unknown_item_value_is_labeled_static_and_not_user_enterable(
     qt_app,
     tmp_path,
 ) -> None:
     stack = _stack(tmp_path)
-    acid = Item(
-        "T5_POTION_ACID",
-        "Acid Potion",
+    output = Item(
+        "T5_POTION_UNRESOLVED_TEST",
+        "Unresolved Test Potion",
         5,
         crafting_category="potion",
     )
-    rare = Item("T5_ALCHEMY_RARE_DIREBEAR", "Direbear Remains", 5)
+    ingredient = Item("T5_UNRESOLVED_INGREDIENT_TEST", "Unresolved Test Ingredient", 5)
     recipe = Recipe(
-        acid,
+        output,
         10,
-        (MaterialRequirement(rare.item_id, 1, False),),
+        (MaterialRequirement(ingredient.item_id, 1, True),),
         item_value=None,
         base_focus_cost=294,
         provenance=Provenance.STATIC_GAME_DATA,
-        source_version="acid-pinned-fixture",
+        source_version="unresolved-static-fixture",
     )
     now = datetime.now(UTC)
     stack.catalog.replace_all(
         [
-            CatalogItem(acid, None, True, Provenance.STATIC_GAME_DATA, "acid-pinned-fixture"),
-            CatalogItem(rare, None, False, Provenance.STATIC_GAME_DATA, "acid-pinned-fixture"),
+            CatalogItem(
+                output, None, True, Provenance.STATIC_GAME_DATA, "unresolved-static-fixture"
+            ),
+            CatalogItem(
+                ingredient,
+                None,
+                False,
+                Provenance.STATIC_GAME_DATA,
+                "unresolved-static-fixture",
+            ),
         ],
         [recipe],
         CatalogImport(
-            "acid-fixture",
-            "memory://acid",
-            "acid-pinned-fixture",
+            "unresolved-static-fixture",
+            "memory://unresolved-static",
+            "unresolved-static-fixture",
             now,
             now,
             2,
@@ -673,8 +726,8 @@ def test_unknown_acid_item_value_is_labeled_static_and_not_user_enterable(
     )
     stack.resolver.repository.upsert_many(
         (
-            _price(rare.item_id, 1, 1_000, now),
-            _price(acid.item_id, 1, 5_000, now),
+            _price(ingredient.item_id, 1, 1_000, now),
+            _price(output.item_id, 1, 5_000, now),
         )
     )
     stack.fees.set(

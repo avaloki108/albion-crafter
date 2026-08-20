@@ -7,7 +7,10 @@ import pytest
 
 from albion_crafter.core.models import Item, MaterialRequirement, Recipe
 from albion_crafter.database.database import Database, MarketPriceRepository
+from albion_crafter.database.v3 import MarketHistoryRepository
 from albion_crafter.market.aodp import AODPClient
+from albion_crafter.market.estimation import MarketPriceSource, PriceConfidence
+from albion_crafter.market.history import AODPHistoryClient
 from albion_crafter.market.models import MarketPrice, MarketSide, Region
 from albion_crafter.market.recipe_refresh import (
     RecipePriceAvailabilityStatus,
@@ -271,6 +274,119 @@ def test_successful_http_with_missing_selected_side_is_not_complete(tmp_path) ->
     assert result.missing_requirements[0].role is RecipePriceRole.OUTPUT
     assert not result.is_complete
     assert result.is_partial
+
+
+def test_missing_sell_is_batched_into_daily_history_and_becomes_estimated(tmp_path) -> None:
+    database = Database(tmp_path / "recipe-history-fallback.db")
+    database.initialize()
+    prices = MarketPriceRepository(database, wall_clock=lambda: NOW)
+    history = MarketHistoryRepository(database)
+    history_urls: list[str] = []
+
+    def current_transport(url: str, _timeout: float) -> bytes:
+        item_ids, city, quality = _request_identity(url)
+        rows = json.loads(_payload(item_ids, city, quality))
+        for row in rows:
+            if row["item_id"] == "T5_POTION_ACID":
+                row["sell_price_min"] = 0
+                row["sell_price_min_date"] = "0001-01-01T00:00:00"
+        return json.dumps(rows).encode()
+
+    def history_transport(url: str, _timeout: float) -> bytes:
+        history_urls.append(url)
+        assert "/history/T5_POTION_ACID.json" in url
+        return json.dumps(
+            [
+                {
+                    "location": "Bridgewatch",
+                    "item_id": "T5_POTION_ACID",
+                    "quality": 1,
+                    "data": [
+                        {
+                            "item_count": 20,
+                            "avg_price": 10_000 + day * 10,
+                            "timestamp": f"2026-08-{18 - day:02d}T00:00:00",
+                        }
+                        for day in range(7)
+                    ],
+                }
+            ]
+        ).encode()
+
+    service = RecipePriceRefreshService(
+        prices,
+        client_factory=lambda region: AODPClient(
+            region,
+            transport=current_transport,
+            wall_clock=lambda: NOW,
+        ),
+        history_repository=history,
+        history_client_factory=lambda region: AODPHistoryClient(
+            region,
+            transport=history_transport,
+            wall_clock=lambda: NOW,
+        ),
+        wall_clock=lambda: NOW,
+    )
+    result = service.refresh(
+        _request(
+            Recipe(
+                output=Item("T5_POTION_ACID", "Acid Potion", 5),
+                output_quantity=10,
+                materials=(MaterialRequirement("T5_TEASEL", 48),),
+            )
+        )
+    )
+
+    output = next(
+        value for value in result.availability if value.requirement.role is RecipePriceRole.OUTPUT
+    )
+    assert len(history_urls) == 1
+    assert result.history_batches_succeeded == 1
+    assert result.historical_estimates_available == 1
+    assert output.status is RecipePriceAvailabilityStatus.HISTORICAL_ESTIMATE
+    assert output.source is MarketPriceSource.HISTORICAL_ESTIMATE
+    assert output.confidence is PriceConfidence.HIGH
+    assert output.historical_days_used == 7
+    assert result.selected_sides_available == 2
+    assert result.is_complete
+
+
+def test_missing_buy_never_triggers_sell_history_fallback(tmp_path) -> None:
+    database = Database(tmp_path / "recipe-buy-no-history.db")
+    database.initialize()
+    prices = MarketPriceRepository(database, wall_clock=lambda: NOW)
+    history = MarketHistoryRepository(database)
+    history_calls = 0
+
+    def current_transport(url: str, _timeout: float) -> bytes:
+        return _payload(*_request_identity(url), buy_price=0)
+
+    def history_transport(_url: str, _timeout: float) -> bytes:
+        nonlocal history_calls
+        history_calls += 1
+        return b"[]"
+
+    service = RecipePriceRefreshService(
+        prices,
+        client_factory=lambda region: AODPClient(
+            region,
+            transport=current_transport,
+            wall_clock=lambda: NOW,
+        ),
+        history_repository=history,
+        history_client_factory=lambda region: AODPHistoryClient(
+            region,
+            transport=history_transport,
+            wall_clock=lambda: NOW,
+        ),
+        wall_clock=lambda: NOW,
+    )
+    result = service.refresh(_request(_recipe("T5_TEASEL"), output_side=MarketSide.BUY_ORDER))
+
+    assert history_calls == 0
+    assert result.historical_estimates_available == 0
+    assert result.selected_sides_missing == 1
 
 
 def test_malformed_row_is_reported_while_valid_recipe_price_is_persisted(tmp_path) -> None:

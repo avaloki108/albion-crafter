@@ -102,7 +102,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Albion Crafter")
         self.resize(1380, 860)
-        resolver = PriceResolver(market_repository, override_repository)
         station_fee_repository = station_fee_repository or StationFeeRepository(
             market_repository.database
         )
@@ -112,6 +111,7 @@ class MainWindow(QMainWindow):
         history_repository = history_repository or MarketHistoryRepository(
             market_repository.database
         )
+        resolver = PriceResolver(market_repository, override_repository, history_repository)
         snapshot_repository = snapshot_repository or PlanSnapshotRepository(
             market_repository.database
         )
@@ -216,7 +216,10 @@ class MainWindow(QMainWindow):
             catalog_repository,
             station_fee_repository,
             crafting_profile_repository,
-            refresh_service=RecipePriceRefreshService(market_repository),
+            refresh_service=RecipePriceRefreshService(
+                market_repository,
+                history_repository=history_repository,
+            ),
         )
         self.market = MarketDataView(
             market_repository,

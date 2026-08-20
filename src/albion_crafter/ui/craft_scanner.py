@@ -67,6 +67,7 @@ class CraftScannerView(QWidget):
         "Silver / Focus",
         "Liquidity",
         "Oldest price",
+        "Price confidence",
         "Actionability",
     )
 
@@ -387,6 +388,14 @@ class CraftScannerView(QWidget):
                 ),
                 SortableItem(self._duration(oldest_age), self._seconds(oldest_age)),
                 SortableItem(
+                    (
+                        f"ESTIMATED ({opportunity.pricing.historical_estimate_count})"
+                        if opportunity.pricing.historical_estimate_count
+                        else "LIVE"
+                    ),
+                    opportunity.pricing.historical_estimate_count,
+                ),
+                SortableItem(
                     result.actionability.status.value,
                     result.actionability.status.value,
                 ),
@@ -530,9 +539,19 @@ class CraftScannerView(QWidget):
             evidence_lines.append(
                 f"- {line.role}: {line.item_id}{detail} · {line.city} · "
                 f"{line.side} · unit price={money(line.price)} · "
+                f"source={line.source.value} · confidence={line.confidence.value} · "
                 f"{line.provenance.value} · observed="
                 f"{self._timestamp(line.observation_timestamp)} · age={age} · "
                 f"fetched={self._timestamp(line.fetched_at)}"
+                + (
+                    f" · history days={line.historical_days_used} · 7d volume="
+                    f"{line.historical_total_volume:,} · avg/day="
+                    f"{line.historical_avg_daily_volume_7d:,.1f} · volatility="
+                    f"{line.historical_volatility:.1%}"
+                    if line.historical_avg_daily_volume_7d is not None
+                    and line.historical_volatility is not None
+                    else ""
+                )
             )
         evidence = "\n".join(evidence_lines)
         liquidity_text = (

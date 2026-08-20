@@ -9,10 +9,20 @@ from albion_crafter.core.actionability import (
     ActionabilityAssessment,
     ActionabilityReason,
     ReasonCode,
+    ReasonSeverity,
 )
 from albion_crafter.core.models import Recipe
 from albion_crafter.core.provenance import Provenance
 
+from .estimation import (
+    DEFAULT_HISTORICAL_ESTIMATION_POLICY,
+    HistoricalEstimationPolicy,
+    HistoricalPriceEstimate,
+    MarketPriceSource,
+    PriceConfidence,
+    estimate_historical_sell_price,
+)
+from .history import HistoryTimeScale, MarketHistoryInterval
 from .models import (
     Freshness,
     FreshnessPolicy,
@@ -24,6 +34,7 @@ from .models import (
 
 if TYPE_CHECKING:
     from albion_crafter.database.database import MarketPriceRepository, PriceOverrideRepository
+    from albion_crafter.database.v3 import MarketHistoryRepository
 
 _FRESHNESS_RANK = {
     Freshness.FRESH: 0,
@@ -46,10 +57,34 @@ class ResolvedPrice:
     provenance: Provenance
     freshness: Freshness
     role: str
+    source: MarketPriceSource
+    confidence: PriceConfidence
+    current_price: float | None = None
+    current_timestamp: datetime | None = None
+    current_fetched_at: datetime | None = None
+    current_freshness: Freshness = Freshness.UNKNOWN
+    historical_reference_price: float | None = None
+    historical_days_used: int = 0
+    historical_days_available: int = 0
+    historical_total_volume: int = 0
+    historical_avg_daily_volume_7d: float | None = None
+    historical_avg_daily_volume_30d: float | None = None
+    historical_median_price: float | None = None
+    historical_volatility: float | None = None
+    historical_latest_bucket: datetime | None = None
+    historical_outliers_ignored: int = 0
 
     @property
     def is_override(self) -> bool:
         return self.provenance is Provenance.USER_OVERRIDE
+
+    @property
+    def is_historical_estimate(self) -> bool:
+        return self.source is MarketPriceSource.HISTORICAL_ESTIMATE
+
+    @property
+    def current_is_stale(self) -> bool:
+        return self.current_freshness is Freshness.STALE
 
 
 def resolve_price(
@@ -63,6 +98,8 @@ def resolve_price(
     as_of: datetime,
     market_price: MarketPrice | None = None,
     override: UserPriceOverride | None = None,
+    history: Sequence[MarketHistoryInterval] = (),
+    history_policy: HistoricalEstimationPolicy = DEFAULT_HISTORICAL_ESTIMATION_POLICY,
 ) -> ResolvedPrice:
     """Select one effective price using the shared, fixed-clock trust policy.
 
@@ -72,6 +109,29 @@ def resolve_price(
     """
     if as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
+    current_price: float | None = None
+    current_timestamp: datetime | None = None
+    current_fetched_at: datetime | None = None
+    current_provenance = Provenance.UNKNOWN
+    current_freshness = Freshness.UNKNOWN
+    if market_price is not None:
+        cached_price = market_price.price_for_side(side)
+        current_price = (
+            float(cached_price) if cached_price is not None and cached_price > 0 else None
+        )
+        current_timestamp = (
+            market_price.timestamp_for_side(side) if current_price is not None else None
+        )
+        current_fetched_at = market_price.fetched_at
+        current_provenance = market_price.provenance
+        current_freshness = freshness_policy.classify(current_timestamp, now=as_of)
+
+    shared = {
+        "current_price": current_price,
+        "current_timestamp": current_timestamp,
+        "current_fetched_at": current_fetched_at,
+        "current_freshness": current_freshness,
+    }
     if override is not None:
         return ResolvedPrice(
             item_id=item_id,
@@ -84,44 +144,133 @@ def resolve_price(
             provenance=override.provenance,
             freshness=freshness_policy.classify(override.entered_at, now=as_of),
             role=role,
+            source=MarketPriceSource.USER_OVERRIDE,
+            confidence=PriceConfidence.LIVE,
+            **shared,
         )
 
-    if market_price is None:
+    if current_price is not None and current_freshness in {Freshness.FRESH, Freshness.AGING}:
         return ResolvedPrice(
             item_id=item_id,
             city=city,
             quality=quality,
             side=side,
-            price=None,
-            observation_timestamp=None,
-            fetched_at=None,
-            provenance=Provenance.UNKNOWN,
-            freshness=Freshness.UNKNOWN,
+            price=current_price,
+            observation_timestamp=current_timestamp,
+            fetched_at=current_fetched_at,
+            provenance=current_provenance,
+            freshness=current_freshness,
             role=role,
+            source=MarketPriceSource.CURRENT,
+            confidence=PriceConfidence.LIVE,
+            **shared,
         )
 
-    cached_price = market_price.price_for_side(side)
-    price = float(cached_price) if cached_price is not None and cached_price > 0 else None
-    timestamp = market_price.timestamp_for_side(side) if price is not None else None
+    estimate: HistoricalPriceEstimate | None = None
+    if side is MarketSide.SELL_ORDER and history:
+        estimate = estimate_historical_sell_price(history, as_of=as_of, policy=history_policy)
+    if estimate is not None:
+        return ResolvedPrice(
+            item_id=item_id,
+            city=city,
+            quality=quality,
+            side=side,
+            price=estimate.reference_price,
+            observation_timestamp=estimate.latest_bucket_at,
+            fetched_at=estimate.fetched_at,
+            provenance=Provenance.AODP_CACHED,
+            freshness=Freshness.AGING,
+            role=role,
+            source=MarketPriceSource.HISTORICAL_ESTIMATE,
+            confidence=estimate.confidence,
+            historical_reference_price=estimate.reference_price,
+            historical_days_used=estimate.days_used,
+            historical_days_available=estimate.days_available,
+            historical_total_volume=estimate.total_volume_7d,
+            historical_avg_daily_volume_7d=estimate.average_daily_volume_7d,
+            historical_avg_daily_volume_30d=estimate.average_daily_volume_30d,
+            historical_median_price=estimate.median_price,
+            historical_volatility=estimate.volatility,
+            historical_latest_bucket=estimate.latest_bucket_at,
+            historical_outliers_ignored=estimate.outliers_ignored,
+            **shared,
+        )
+
+    # Preserve a nonzero stale/future/untimestamped current observation when no
+    # usable history exists. It remains explicitly non-actionable and its trust
+    # state is never hidden; recent history still wins above it for SELL.
+    if current_price is not None:
+        return ResolvedPrice(
+            item_id=item_id,
+            city=city,
+            quality=quality,
+            side=side,
+            price=current_price,
+            observation_timestamp=current_timestamp,
+            fetched_at=current_fetched_at,
+            provenance=current_provenance,
+            freshness=current_freshness,
+            role=role,
+            source=MarketPriceSource.CURRENT,
+            confidence=PriceConfidence.LIVE,
+            **shared,
+        )
+
     return ResolvedPrice(
         item_id=item_id,
         city=city,
         quality=quality,
         side=side,
-        price=price,
-        observation_timestamp=timestamp,
-        fetched_at=market_price.fetched_at,
-        provenance=market_price.provenance,
-        freshness=freshness_policy.classify(timestamp, now=as_of),
+        price=None,
+        observation_timestamp=None,
+        fetched_at=current_fetched_at,
+        provenance=Provenance.UNKNOWN,
+        freshness=current_freshness,
         role=role,
+        source=MarketPriceSource.MISSING,
+        confidence=PriceConfidence.MISSING,
+        **shared,
     )
 
 
 def price_quality_reasons(line: ResolvedPrice) -> tuple[ActionabilityReason, ...]:
     """Return provenance/freshness blockers for a selected, present price."""
-    if line.price is None:
-        return ()
     reasons: list[ActionabilityReason] = []
+    if line.source is MarketPriceSource.HISTORICAL_ESTIMATE:
+        reasons.append(
+            ActionabilityReason(
+                ReasonCode.HISTORICAL_PRICE_ESTIMATE,
+                f"{line.item_id} {line.role} uses a {line.confidence.value} confidence "
+                f"AODP historical sell estimate from {line.historical_days_used} recent day(s) "
+                f"and {line.historical_total_volume:,} reported item(s).",
+                ReasonSeverity.WARNING,
+            )
+        )
+        return tuple(reasons)
+    if line.price is None:
+        if line.current_price is not None and line.current_freshness is Freshness.STALE:
+            reasons.append(
+                ActionabilityReason(
+                    ReasonCode.STALE_PRICE,
+                    f"{line.item_id} {line.side.value} current price is stale and no usable "
+                    "historical sell estimate replaced it.",
+                )
+            )
+        elif line.current_price is not None and line.current_freshness is Freshness.FUTURE:
+            reasons.append(
+                ActionabilityReason(
+                    ReasonCode.FUTURE_TIMESTAMP,
+                    f"{line.item_id} {line.side.value} current price is materially future-dated.",
+                )
+            )
+        elif line.current_price is not None and line.current_freshness is Freshness.UNKNOWN:
+            reasons.append(
+                ActionabilityReason(
+                    ReasonCode.UNKNOWN_TIMESTAMP,
+                    f"{line.item_id} {line.side.value} current price has no observation timestamp.",
+                )
+            )
+        return tuple(reasons)
     if not line.provenance.is_actionable_price_source:
         reasons.append(
             ActionabilityReason(
@@ -192,6 +341,14 @@ class PricingSnapshot:
     def has_sample_data(self) -> bool:
         return any(price.provenance is Provenance.DEMO_SAMPLE for price in self.resolved_prices)
 
+    @property
+    def historical_estimate_count(self) -> int:
+        return sum(line.is_historical_estimate for line in self.resolved_prices)
+
+    @property
+    def live_price_count(self) -> int:
+        return sum(line.source is MarketPriceSource.CURRENT for line in self.resolved_prices)
+
 
 class PriceResolver:
     """Resolve an explicit material side and output side without hiding trust state."""
@@ -200,9 +357,14 @@ class PriceResolver:
         self,
         repository: MarketPriceRepository,
         overrides: PriceOverrideRepository | None = None,
+        history: MarketHistoryRepository | None = None,
+        *,
+        history_policy: HistoricalEstimationPolicy = DEFAULT_HISTORICAL_ESTIMATION_POLICY,
     ) -> None:
         self.repository = repository
         self.overrides = overrides
+        self.history = history
+        self.history_policy = history_policy
 
     def resolve(
         self,
@@ -286,6 +448,18 @@ class PriceResolver:
             else None
         )
         record = self.repository.get(item_id, city, quality, region)
+        history = (
+            self.history.list_for_items(
+                region,
+                (item_id,),
+                (city,),
+                quality,
+                as_of - self.history_policy.volume_lookback,
+                time_scale=HistoryTimeScale.DAILY,
+            )
+            if self.history is not None and side is MarketSide.SELL_ORDER
+            else ()
+        )
         return resolve_price(
             item_id=item_id,
             city=city,
@@ -296,4 +470,6 @@ class PriceResolver:
             as_of=as_of,
             market_price=record,
             override=override,
+            history=history,
+            history_policy=self.history_policy,
         )

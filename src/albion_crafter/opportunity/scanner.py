@@ -51,7 +51,8 @@ _SCAN_NOTES = (
     "Normal quality is the only decision-grade crafting mode; "
     "higher qualities block actionability.",
     "Current AODP values are top-of-book unit observations; order depth is not modeled.",
-    "Liquidity history is optional and never substitutes for a missing current price.",
+    "Daily AODP sell history may provide a labeled estimate when a current SELL price is "
+    "missing or stale; BUY prices never use history.",
 )
 
 
@@ -79,6 +80,7 @@ class OpportunityScanner:
         liquidity_by_key: Mapping[LiquidityKey, LiquidityAssessment] | None = None,
         history_by_key: Mapping[LiquidityKey, tuple[MarketHistoryInterval, ...]] | None = None,
         history_status_by_key: Mapping[LiquidityKey, str] | None = None,
+        price_history: Iterable[MarketHistoryInterval] = (),
         as_of: datetime | None = None,
         progress: ProgressCallback | None = None,
         cancellation: CancellationToken | None = None,
@@ -121,7 +123,7 @@ class OpportunityScanner:
                 cancelled=True,
                 notes=_SCAN_NOTES,
             )
-        pricing_index = PricingIndex(prices, manual_prices)
+        pricing_index = PricingIndex(prices, manual_prices, price_history)
         policy = FreshnessPolicy(constraints.maximum_price_age)
         station_policy = FreshnessPolicy(constraints.maximum_station_fee_age)
         total = len(candidates) * len(constraints.craft_cities) * len(constraints.sell_cities)

@@ -1,11 +1,13 @@
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
 from albion_crafter.core.stations import StationType, station_type_for_item
 from albion_crafter.data.static_importer import (
     StaticCatalogParser,
+    StaticCatalogValidator,
     StaticDataClient,
     StaticDataError,
     StaticDataRelease,
@@ -13,6 +15,8 @@ from albion_crafter.data.static_importer import (
 )
 from albion_crafter.database.catalog import CatalogImport, CatalogRepository
 from albion_crafter.database.database import Database
+
+ACID_UPSTREAM_FIXTURE = Path(__file__).parent / "fixtures" / "acid-potion-upstream-contract"
 
 
 def _payloads() -> tuple[bytes, bytes]:
@@ -132,53 +136,26 @@ def test_static_import_is_real_schema_aware_cached_and_idempotent(tmp_path) -> N
     assert repository.search_recipes("Test Sword", enchantment=1)[0].item_id == "T4_SWORD@1"
 
 
-def test_acid_potion_missing_upstream_item_value_is_not_silently_zeroed(tmp_path) -> None:
+def test_acid_potion_item_value_is_derived_without_nonreturnable_catalyst(tmp_path) -> None:
     """Mirror the pinned T5 acid shape: output and rare ingredient omit Item Value."""
 
-    raw = {
-        "items": {
-            "consumableitem": {
-                "@uniquename": "T5_POTION_ACID",
-                "@tier": "5",
-                "@craftingcategory": "potion",
-                "craftingrequirements": {
-                    "@amountcrafted": "10",
-                    "@craftingfocus": "294",
-                    "craftresource": [
-                        {
-                            "@uniquename": "T5_ALCHEMY_RARE_DIREBEAR",
-                            "@count": "1",
-                            "@maxreturnamount": "0",
-                        },
-                        {"@uniquename": "T5_TEASEL", "@count": "4"},
-                        {"@uniquename": "T4_BURDOCK", "@count": "4"},
-                        {"@uniquename": "T4_MILK", "@count": "4"},
-                    ],
-                },
-            },
-            "simpleitem": [
-                {"@uniquename": "T5_ALCHEMY_RARE_DIREBEAR", "@tier": "5"},
-                {"@uniquename": "T5_TEASEL", "@tier": "5", "@itemvalue": "40"},
-                {"@uniquename": "T4_BURDOCK", "@tier": "4", "@itemvalue": "40"},
-                {"@uniquename": "T4_MILK", "@tier": "4", "@itemvalue": "40"},
-            ],
-        }
-    }
-    formatted = [
-        {
-            "UniqueName": "T5_POTION_ACID",
-            "LocalizedNames": {"EN-US": "Acid Potion"},
-        }
-    ]
     parsed = StaticCatalogParser().parse(
-        json.dumps(raw).encode(),
-        json.dumps(formatted).encode(),
+        (ACID_UPSTREAM_FIXTURE / "items.json").read_bytes(),
+        (ACID_UPSTREAM_FIXTURE / "formatted-items.json").read_bytes(),
         source_version="acid-pinned-fixture",
     )
 
     acid = next(recipe for recipe in parsed.recipes if recipe.output.item_id == "T5_POTION_ACID")
-    assert acid.item_value is None
-    assert acid.item_value != 0
+    assert acid.item_value == 336
+    assert acid.output_quantity == 10
+    assert [
+        (material.item_id, material.quantity, material.returnable) for material in acid.materials
+    ] == [
+        ("T5_ALCHEMY_RARE_DIREBEAR", 1, False),
+        ("T5_TEASEL", 48, True),
+        ("T4_BURDOCK", 24, True),
+        ("T4_MILK", 12, True),
+    ]
     assert acid.output.crafting_category == "potion"
     assert station_type_for_item(acid.output) is StationType.ALCHEMIST_LAB
 
@@ -200,10 +177,81 @@ def test_acid_potion_missing_upstream_item_value_is_not_silently_zeroed(tmp_path
     )
     coverage = repository.recipe_coverage()
     assert coverage.total == 1
-    assert coverage.supported == 0
-    assert coverage.unknown_item_value == 1
+    assert coverage.supported == 1
+    assert coverage.unknown_item_value == 0
     assert coverage.unknown_station_type == 0
     assert coverage.ambiguous_recipe == 0
+
+
+def test_item_value_resolution_walks_intermediate_recipes_and_preserves_direct_values() -> None:
+    raw = {
+        "items": {
+            "consumableitem": [
+                {
+                    "@uniquename": "T4_INTERMEDIATE",
+                    "@tier": "4",
+                    "craftingrequirements": {
+                        "@amountcrafted": "2",
+                        "craftresource": {"@uniquename": "T4_RAW", "@count": "4"},
+                    },
+                },
+                {
+                    "@uniquename": "T4_MEAL_TEST",
+                    "@tier": "4",
+                    "craftingrequirements": {
+                        "@amountcrafted": "10",
+                        "craftresource": [
+                            {"@uniquename": "T4_INTERMEDIATE", "@count": "5"},
+                            {"@uniquename": "T4_OTHER", "@count": "10"},
+                        ],
+                    },
+                },
+                {
+                    "@uniquename": "T4_DIRECT",
+                    "@tier": "4",
+                    "@itemvalue": "999",
+                    "craftingrequirements": {
+                        "craftresource": {"@uniquename": "T4_OTHER", "@count": "1"},
+                    },
+                },
+            ],
+            "simpleitem": [
+                {"@uniquename": "T4_RAW", "@tier": "4", "@itemvalue": "20"},
+                {"@uniquename": "T4_OTHER", "@tier": "4", "@itemvalue": "10"},
+            ],
+        }
+    }
+    parsed = StaticCatalogParser().parse(
+        json.dumps(raw).encode(), b"[]", source_version="recursive-item-values"
+    )
+    recipes = {recipe.output.item_id: recipe for recipe in parsed.recipes}
+
+    assert recipes["T4_INTERMEDIATE"].item_value == 40
+    assert recipes["T4_MEAL_TEST"].item_value == 30
+    assert recipes["T4_DIRECT"].item_value == 999
+
+
+def test_invalid_item_numerics_and_duplicate_ids_are_structural_errors() -> None:
+    raw_payload, formatted = _payloads()
+    raw = json.loads(raw_payload)
+    raw["items"]["simpleitem"][0]["@tier"] = "tier-four"
+    raw["items"]["simpleitem"].append({"@uniquename": "T4_BAR", "@tier": "4", "@itemvalue": "17"})
+    parsed = StaticCatalogParser().parse(
+        json.dumps(raw).encode(), formatted, source_version="invalid-numerics"
+    )
+    validation = StaticCatalogValidator(
+        StaticValidationPolicy(
+            minimum_items=0,
+            minimum_recipes=0,
+            minimum_ingredients=0,
+            sentinel_ids=frozenset(),
+        )
+    ).validate(parsed, previous_counts=(0, 0))
+
+    assert any("T4_BAR has invalid tier" in message for message in validation.hard_errors)
+    assert any(
+        "Duplicate canonical item ID T4_BAR" in message for message in validation.hard_errors
+    )
 
 
 def test_static_parser_rejects_malformed_json(tmp_path) -> None:
@@ -244,7 +292,7 @@ def test_static_download_failure_is_reported_without_touching_catalog(tmp_path) 
     assert repository.counts() == (0, 0)
     report = repository.latest_import_report()
     assert report is not None
-    assert report.validation_status == "download_failed_v3"
+    assert report.validation_status == "download_failed_v4"
     assert not report.activated
     assert "controlled offline failure" in report.validation_messages[0]
 
@@ -267,7 +315,7 @@ def test_tiny_candidate_is_rejected_and_reported_without_force(tmp_path) -> None
     assert repository.counts() == (0, 0)
     report = repository.latest_import_report()
     assert report is not None
-    assert report.validation_status == "rejected_v3"
+    assert report.validation_status == "rejected_v4"
     assert not report.activated
     assert any("sentinel" in message for message in report.validation_messages)
 

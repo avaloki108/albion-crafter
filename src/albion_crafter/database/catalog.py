@@ -211,6 +211,24 @@ class CatalogRepository:
             ).fetchone()
         return self._report_from_row(row) if row else None
 
+    def get_item(self, item_id: str) -> CatalogItem | None:
+        """Return one persisted catalog item, including its static-data metadata."""
+
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM catalog_items WHERE item_id=?",
+                (item_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CatalogItem(
+            item=self._item_from_row(row),
+            item_value=row["item_value"],
+            craftable=bool(row["craftable"]),
+            provenance=Provenance(row["provenance"]),
+            source_version=row["source_version"],
+        )
+
     def get_recipe(self, item_id: str) -> Recipe | None:
         with self.database.connection() as connection:
             row = connection.execute(
@@ -501,6 +519,21 @@ class CatalogRepository:
                         SELECT 1 FROM catalog_materials m
                         LEFT JOIN catalog_items i ON i.item_id=m.item_id
                         WHERE i.item_id IS NULL OR m.quantity <= 0
+                           OR m.returnable NOT IN (0, 1)
+                    )
+                    OR EXISTS(
+                        SELECT 1 FROM catalog_items
+                        WHERE (tier IS NOT NULL AND (tier < 1 OR tier > 8))
+                           OR enchantment < 0 OR enchantment > 4
+                           OR (max_quality IS NOT NULL AND (max_quality < 1 OR max_quality > 5))
+                           OR (item_value IS NOT NULL AND item_value < 0)
+                           OR craftable NOT IN (0, 1)
+                    )
+                    OR EXISTS(
+                        SELECT 1 FROM catalog_recipes
+                        WHERE output_quantity <= 0
+                           OR (base_focus_cost IS NOT NULL AND base_focus_cost < 0)
+                           OR recipe_ambiguous NOT IN (0, 1)
                     )
                 """,
                 (
