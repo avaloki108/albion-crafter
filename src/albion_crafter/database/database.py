@@ -923,6 +923,14 @@ class MarketPriceRepository:
                 ).fetchone()
         return int(row[0])
 
+    def list_tracked_item_ids(self, region: Region) -> tuple[str, ...]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT item_id FROM market_prices WHERE region = ? ORDER BY item_id",
+                (region.value,),
+            ).fetchall()
+        return tuple(str(row["item_id"]) for row in rows)
+
     @staticmethod
     def _to_model(row: sqlite3.Row) -> MarketPrice:
         fetched_at = _parse_datetime(row["fetched_at"])

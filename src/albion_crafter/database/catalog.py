@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -394,6 +395,29 @@ class CatalogRepository:
                 "SELECT item_id FROM catalog_items ORDER BY item_id"
             ).fetchall()
         return tuple(str(row["item_id"]) for row in rows)
+
+    def list_items(self, item_ids: Iterable[str] | None = None) -> list[Item]:
+        """Bulk-load canonical catalog items, optionally restricted to explicit IDs."""
+
+        requested = None if item_ids is None else tuple(dict.fromkeys(item_ids))
+        if requested == ():
+            return []
+        rows = []
+        with self.database.connection() as connection:
+            if requested is None:
+                rows = connection.execute("SELECT * FROM catalog_items ORDER BY item_id").fetchall()
+            else:
+                for offset in range(0, len(requested), 900):
+                    chunk = requested[offset : offset + 900]
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows.extend(
+                        connection.execute(
+                            f"SELECT * FROM catalog_items "  # noqa: S608
+                            f"WHERE item_id IN ({placeholders}) ORDER BY item_id",
+                            chunk,
+                        ).fetchall()
+                    )
+        return [self._item_from_row(row) for row in rows]
 
     def recipe_coverage(self) -> CatalogRecipeCoverage:
         """Classify imported recipes without hydrating ingredients or querying per recipe."""

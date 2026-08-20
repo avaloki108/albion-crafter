@@ -49,7 +49,7 @@ StaticTransport = Callable[[str, float], bytes]
 
 
 def _default_transport(url: str, timeout: float) -> bytes:
-    request = Request(url, headers={"User-Agent": "AlbionCrafter/0.6.1"})
+    request = Request(url, headers={"User-Agent": "AlbionCrafter/0.6.2"})
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS hosts
         return response.read()
 

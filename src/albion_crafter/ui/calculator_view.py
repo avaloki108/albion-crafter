@@ -272,6 +272,13 @@ class CalculatorView(QWidget):
         self.refresh_status.setObjectName("muted")
         row.addWidget(self.refresh_status, 1)
         root.addLayout(row)
+        broad_note = QLabel(
+            "This calculator refreshes only the selected recipe. For broad cache coverage, use "
+            "Market Data → Refresh Royal Markets."
+        )
+        broad_note.setWordWrap(True)
+        broad_note.setObjectName("muted")
+        root.addWidget(broad_note)
 
     def _build_summary(self, root: QVBoxLayout) -> None:
         summary = QGroupBox("Your totals")

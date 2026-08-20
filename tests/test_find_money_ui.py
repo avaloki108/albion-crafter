@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from albion_crafter.core.crafting_profile import CraftingSkillProfile
+from albion_crafter.core.freshness import Freshness
 from albion_crafter.core.models import ActionKind, Item, MaterialRequirement, Recipe
 from albion_crafter.core.provenance import Provenance
 from albion_crafter.core.stations import StationFeeObservation, StationType
@@ -34,17 +35,29 @@ from albion_crafter.database.v4 import (
     PlanSnapshotRepository,
 )
 from albion_crafter.market.aodp import AODPClient
-from albion_crafter.market.models import MarketPrice, Region
+from albion_crafter.market.models import MarketPrice, MarketSide, Region
+from albion_crafter.market.sync import RoyalMarketSyncService, RoyalMarketUniverseService
 from albion_crafter.planning.current_refresh import CurrentMarketRefreshExecutor
 from albion_crafter.planning.models import (
     ArbitrageScope,
     FindMoneyConstraints,
+    MarketKey,
+    PriceRequirement,
+    PriceRole,
     TransportPolicy,
 )
-from albion_crafter.planning.preflight import FindMoneyPreflightPlanner
+from albion_crafter.planning.preflight import (
+    FindMoneyPreflightPlanner,
+    ObservationDisposition,
+    PriceRequirementAssessment,
+)
 from albion_crafter.planning.service import FindMoneyService
 from albion_crafter.ui.common import age_text
-from albion_crafter.ui.find_money import FindMoneyView
+from albion_crafter.ui.find_money import (
+    MAX_INLINE_PRICE_OVERRIDES,
+    FindMoneyView,
+    TrustPreset,
+)
 
 NOW = datetime(2026, 8, 18, 12, tzinfo=UTC)
 
@@ -312,9 +325,12 @@ def test_find_money_page_scrolls_instead_of_compressing_results(qt_app, tmp_path
     assert vertical_scrollbar.maximum() > 0
     assert horizontal_scrollbar.maximum() > 0
     assert horizontal_scrollbar.isVisible()
-    vertical_scrollbar.setValue(vertical_scrollbar.maximum())
-    horizontal_scrollbar.setValue(horizontal_scrollbar.maximum())
-    qt_app.processEvents()
+    # A live compositor can constrain this top-level test window over several geometry events.
+    # Follow the changing maxima until that platform-driven resize has settled.
+    for _ in range(10):
+        vertical_scrollbar.setValue(vertical_scrollbar.maximum())
+        horizontal_scrollbar.setValue(horizontal_scrollbar.maximum())
+        qt_app.processEvents()
     assert vertical_scrollbar.value() == vertical_scrollbar.maximum()
     assert horizontal_scrollbar.value() == horizontal_scrollbar.maximum()
 
@@ -703,6 +719,78 @@ def test_simple_mode_one_click_refreshes_stale_prices_only_after_press(
     view.close()
 
 
+def test_full_sync_populates_blank_search_and_eliminates_targeted_refresh_keys(
+    tmp_path,
+) -> None:
+    service, _snapshots, _preferences, constraints = _stack(tmp_path)
+    baseline_preflight = service.preflight(constraints, as_of=NOW)
+    baseline_result = service.execute(
+        baseline_preflight,
+        refresh_current=False,
+        refresh_history=False,
+    )
+    assert baseline_preflight.constraints.item_query == ""
+    assert baseline_preflight.market_refresh.refresh_keys == ()
+    assert baseline_result.snapshot is not None
+
+    with service.market_prices.database.connection() as connection:
+        connection.execute("DELETE FROM market_prices")
+    empty_preflight = service.preflight(constraints, as_of=NOW)
+    assert len(empty_preflight.market_refresh.refresh_keys) == 2
+
+    def transport(url: str, _timeout: float) -> bytes:
+        parsed = urlparse(url)
+        item_ids = parsed.path.partition("/prices/")[2].removesuffix(".json").split(",")
+        cities = parse_qs(parsed.query)["locations"][0].split(",")
+        return json.dumps(
+            [
+                {
+                    "item_id": item_id,
+                    "city": city,
+                    "quality": 1,
+                    "sell_price_min": 2_500 if item_id == "T4_MAIN_SWORD" else 100,
+                    "sell_price_min_date": NOW.isoformat(),
+                    "buy_price_max": 2_499 if item_id == "T4_MAIN_SWORD" else 99,
+                    "buy_price_max_date": NOW.isoformat(),
+                }
+                for item_id in item_ids
+                for city in cities
+            ]
+        ).encode()
+
+    def client_factory(region: Region, **kwargs) -> AODPClient:
+        return AODPClient(
+            region,
+            **kwargs,
+            transport=transport,
+            wall_clock=lambda: NOW,
+        )
+
+    database = service.market_prices.database
+    sync_result = RoyalMarketSyncService(
+        RoyalMarketUniverseService(CatalogRepository(database)),
+        service.market_prices,
+        client_factory=client_factory,
+        wall_clock=lambda: NOW,
+    ).synchronize(Region.AMERICAS, ("Bridgewatch",))
+    populated_preflight = service.preflight(constraints, as_of=NOW)
+    populated_result = service.execute(
+        populated_preflight,
+        refresh_current=True,
+        refresh_history=False,
+    )
+
+    assert sync_result.status == "complete"
+    assert sync_result.item_count == 2
+    assert populated_preflight.market_refresh.refresh_keys == ()
+    assert populated_result.current_refresh is None
+    assert populated_result.snapshot is not None
+    assert (
+        populated_result.snapshot.total_expected_profit
+        == baseline_result.snapshot.total_expected_profit
+    )
+
+
 def test_simple_mode_collects_station_fee_inline_then_continues(
     qt_app,
     tmp_path,
@@ -773,6 +861,70 @@ def test_simple_mode_distinguishes_missing_prices_and_accepts_inline_overrides(
     assert recording.execute_calls == 2
     assert view.plan_banner.text().startswith("BEST PLAN")
     assert view.action_table.rowCount() > 0
+    view.close()
+
+
+def _missing_assessments(count: int) -> tuple[PriceRequirementAssessment, ...]:
+    return tuple(
+        PriceRequirementAssessment(
+            PriceRequirement(
+                MarketKey(Region.AMERICAS, f"ITEM_{index:03d}", "Bridgewatch", 1),
+                MarketSide.SELL_ORDER,
+                PriceRole.MATERIAL,
+            ),
+            ObservationDisposition.MISSING,
+            None,
+            None,
+            Provenance.UNKNOWN,
+            Freshness.UNKNOWN,
+            True,
+        )
+        for index in range(count)
+    )
+
+
+def test_many_unresolved_prices_recommend_broad_sync_before_manual_form(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    view = FindMoneyView(service, snapshots, preferences, default_constraints=constraints)
+    requested = []
+    view.market_sync_requested.connect(lambda: requested.append(True))
+
+    view._render_price_setup(_missing_assessments(MAX_INLINE_PRICE_OVERRIDES + 1))
+
+    assert view.price_setup.title() == "MARKET COVERAGE TOO LOW"
+    assert view.price_setup_table.isHidden()
+    assert view.price_setup_save_button.isHidden()
+    assert not view.price_setup_manual_button.isHidden()
+    assert not view.price_setup_fast_preset.isHidden()
+    assert "11 required prices" in view.price_setup_note.text()
+    view.price_setup_refresh_markets.click()
+    assert requested == [True]
+
+    view.price_setup_manual_button.click()
+    assert not view.price_setup_table.isHidden()
+    assert view.price_setup_table.rowCount() == 11
+    assert "USER_OVERRIDE" in view.price_setup_status.text()
+
+    view.find_money = lambda: None  # type: ignore[method-assign]
+    view._use_fast_price_setup_preset()
+    assert view.trust_preset.currentData() == TrustPreset.FAST.value
+    view.close()
+
+
+def test_small_unresolved_price_count_keeps_inline_entry_available(qt_app, tmp_path) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    view = FindMoneyView(service, snapshots, preferences, default_constraints=constraints)
+
+    view._render_price_setup(_missing_assessments(2))
+
+    assert view.price_setup.title() == "MARKET DATA UNAVAILABLE"
+    assert not view.price_setup_table.isHidden()
+    assert view.price_setup_table.rowCount() == 2
+    assert not view.price_setup_save_button.isHidden()
+    assert view.price_setup_manual_button.isHidden()
     view.close()
 
 

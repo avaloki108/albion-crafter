@@ -98,8 +98,6 @@ class MainWindow(QMainWindow):
         snapshot_repository: PlanSnapshotRepository | None = None,
         preferences_repository: FindMoneyPreferencesRepository | None = None,
         find_money_service_factory: ServiceFactory | None = None,
-        *,
-        auto_refresh_market_on_startup: bool = False,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Albion Crafter")
@@ -194,7 +192,7 @@ class MainWindow(QMainWindow):
         ):
             self.navigation.addItem(QListWidgetItem(text))
         side_layout.addWidget(self.navigation)
-        version = QLabel("V0.6.1\nSimple Mode")
+        version = QLabel("V0.6.2\nSimple Mode")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         side_layout.addWidget(version)
@@ -226,7 +224,6 @@ class MainWindow(QMainWindow):
             catalog_repository,
             settings_repository,
             history_repository,
-            auto_refresh_on_startup=auto_refresh_market_on_startup,
         )
         self.settings = SettingsView(
             settings_repository,
@@ -257,8 +254,14 @@ class MainWindow(QMainWindow):
         self.calculator.prices_refreshed.connect(self._calculator_prices_refreshed)
         self.calculator.station_fee_saved.connect(self._calculator_station_fee_saved)
         self.find_money.focus_setup_requested.connect(lambda: self.navigation.setCurrentRow(4))
+        self.find_money.market_sync_requested.connect(self._open_market_sync)
         self.find_money.evidence_saved.connect(self._find_money_evidence_saved)
+        self.scanner.market_sync_requested.connect(self._open_market_sync)
         self.statusBar().showMessage("Enter your bankroll and press FIND ME MONEY")
+
+    def _open_market_sync(self) -> None:
+        self.navigation.setCurrentRow(3)
+        self.statusBar().showMessage("Choose Royal cities, then press REFRESH ROYAL MARKETS", 7000)
 
     def _find_money_evidence_saved(self) -> None:
         self.market.reload()

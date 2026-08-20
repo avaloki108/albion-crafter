@@ -68,6 +68,11 @@ def test_zero_actionable_scan_explains_scope_and_offers_reason_inspection(
     assert "22 unsupported static data" in view.zero_results.text()
     assert "individual reasons" in view.zero_results.text()
     assert not view.show_nonactionable_button.isHidden()
+    assert not view.market_sync_button.isHidden()
+    sync_requests: list[bool] = []
+    view.market_sync_requested.connect(lambda: sync_requests.append(True))
+    view.market_sync_button.click()
+    assert sync_requests == [True]
 
     rescans: list[bool] = []
     view.start_scan = lambda: rescans.append(True)  # type: ignore[method-assign]

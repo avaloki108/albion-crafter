@@ -1,4 +1,4 @@
-# Albion Crafter 0.6.1
+# Albion Crafter 0.6.2
 
 Albion Crafter is a cross-platform PySide6 desktop decision aid for Albion Online production and
 market analysis. Find Me Money can now allocate one bankroll across **crafting, refining, and
@@ -15,16 +15,31 @@ refines, or places market orders.
 The application opens on the normal player workflow: enter bankroll, choose a home city, and
 press **FIND ME MONEY**. One explicit action performs the network-free preflight and then the
 existing sparse refresh, Craft/Refine/Arbitrage evaluation, shared-capacity optimization,
-validation, and immutable-snapshot pipeline. On each app launch, a separate background task checks
-every active-catalog item at Normal quality across all supported cities and persists each
-successful AODP batch without blocking the UI.
+validation, and immutable-snapshot pipeline. Application startup remains offline. For broad
+discovery, Market Data provides an explicit **REFRESH ROYAL MARKETS** action that populates the
+shared local cache before planning.
 
 Simple Mode searches every action kind enabled by the saved V0.6 controls. It asks inline only
 for genuinely manual blockers: current displayed station fees or required Albion prices that
-AODP could not provide. Focus is disabled, without blocking non-Focus planning, until a usable
-profile exists. Fast, Careful, and Strict presets expose their freshness/history/liquidity
-tradeoffs in player language. Advanced Mode retains all V0.6 inputs, preflight evidence, near
-misses, optimizer diagnostics, and export/history controls.
+AODP could not provide. When more than 10 required prices remain unresolved, it first recommends
+Royal Market Sync or the 24-hour Fast preset instead of opening a giant manual-entry form. Manual
+entry remains available and is stored separately as a user override. Focus is disabled, without
+blocking non-Focus planning, until a usable profile exists. Fast, Careful, and Strict presets
+expose their freshness/history/liquidity tradeoffs in player language. Advanced Mode retains all
+V0.6 inputs, preflight evidence, near misses, optimizer diagnostics, and export/history controls.
+
+### Royal Market Sync
+
+**Market Data → REFRESH ROYAL MARKETS** derives an intentional Normal-quality universe from all
+supported Craft/Refine outputs plus every ingredient those recipes need. It does not request raw
+catalog noise. The default city set is Bridgewatch, Fort Sterling, Lymhurst, Martlock, and
+Thetford; Caerleon is optional, and Brecilien is excluded.
+
+Requests are de-duplicated, sequential, capped at 100 item IDs and 3,900 encoded URL bytes per
+batch, retried only under the bounded AODP policy, persisted after each successful batch, and
+cancellable between requests. A coverage dashboard reports real observation ages under explicit
+2-hour, 4-hour, and 24-hour windows. Downloading an old observation now does not make its market
+timestamp new. See [Royal Market Sync](docs/MARKET_SYNC.md).
 
 Zero-action results are deliberately distinct:
 
@@ -137,11 +152,10 @@ uv run albion-crafter-update-data
 uv run albion-crafter
 ```
 
-Startup automatically refreshes the complete active catalog's Normal-quality current prices from
-AODP. The same operation is available as **Refresh ALL catalog prices** on Market Data and ignores
-the manual ID fields. If no static catalog exists, startup first downloads and atomically imports
-the maintained [`ao-data/ao-bin-dumps`](https://github.com/ao-data/ao-bin-dumps) release. To
-isolate local state:
+Startup performs no HTTP. Import static data explicitly with `albion-crafter-update-data` or
+**Update Static Game Data**, then use **Market Data → REFRESH ROYAL MARKETS** when broad current
+market coverage is wanted. The maintained static source is
+[`ao-data/ao-bin-dumps`](https://github.com/ao-data/ao-bin-dumps). To isolate local state:
 
 ```bash
 ALBION_CRAFTER_DATA_DIR=/tmp/albion-crafter-dev uv run albion-crafter
@@ -178,10 +192,10 @@ src/albion_crafter/
 ├── opportunity/  legacy independent Craft Scanner
 ├── planning/     three-action preflight, multi-capacity optimizer, validation, exports
 ├── ui/           calculator, unified planner, profile/settings, cancellable workers
-└── main.py       dependency composition and background market startup
+└── main.py       dependency composition and offline desktop startup
 ```
 
-See [Find Me Money](docs/FIND_ME_MONEY.md), [Mechanics](docs/MECHANICS.md),
+See [Find Me Money](docs/FIND_ME_MONEY.md), [Royal Market Sync](docs/MARKET_SYNC.md), [Mechanics](docs/MECHANICS.md),
 [Data sources](docs/DATA_SOURCES.md), [Database](docs/DATABASE.md),
 [Focus profile](docs/CRAFTING_PROFILE.md), and
 [Opportunity scanner](docs/OPPORTUNITY_ENGINE.md).

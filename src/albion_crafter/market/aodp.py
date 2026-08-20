@@ -19,6 +19,7 @@ from albion_crafter.core.provenance import Provenance
 from .models import MarketPrice, Region
 
 SAFE_AODP_URL_LENGTH = 3_900
+DEFAULT_PRICE_BATCH_SIZE = 100
 DEFAULT_MAX_BATCHES = 25
 DEFAULT_MAX_RETRIES = 1
 DEFAULT_RETRY_BACKOFF_SECONDS = 0.5
@@ -53,15 +54,15 @@ CancellationCheck = Callable[[], bool]
 
 
 def _default_transport(url: str, timeout: float) -> bytes:
-    # AODP's REST throttles are server-configured rather than a stable public
-    # requests/minute contract. Keep orchestration sequential and compressed;
-    # do not encode a guessed numeric throttle here.
+    # AODP publishes 180 requests/minute and 300 requests/5 minutes. Operations
+    # remain sequential and preflight-bounded; the normal full-sync plan is well
+    # below both windows, so it does not need an artificial per-request delay.
     request = Request(
         url,
         headers={
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
-            "User-Agent": "AlbionCrafter/0.6.1",
+            "User-Agent": "AlbionCrafter/0.6.2",
         },
     )
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS hosts
@@ -272,7 +273,7 @@ def plan_price_requests(
     region: Region = Region.AMERICAS,
     cities: Sequence[str] = (),
     qualities: Sequence[int] = (1,),
-    batch_size: int = 100,
+    batch_size: int = DEFAULT_PRICE_BATCH_SIZE,
     max_url_length: int = SAFE_AODP_URL_LENGTH,
 ) -> AODPRequestPlan:
     """Purely plan bounded current-price URLs without applying an execution cap."""
@@ -383,7 +384,7 @@ class AODPClient:
         region: Region = Region.AMERICAS,
         *,
         timeout: float = 10.0,
-        batch_size: int = 100,
+        batch_size: int = DEFAULT_PRICE_BATCH_SIZE,
         max_url_length: int = SAFE_AODP_URL_LENGTH,
         max_batches: int = DEFAULT_MAX_BATCHES,
         max_retries: int = DEFAULT_MAX_RETRIES,
@@ -665,6 +666,15 @@ class AODPClient:
         sell_timestamp = _parse_timestamp(row.get("sell_price_min_date"))
         buy_price = _optional_price(row.get("buy_price_max"))
         buy_timestamp = _parse_timestamp(row.get("buy_price_max_date"))
+        # A market side is decision-grade evidence only as a complete value/timestamp pair.
+        # AODP occasionally represents absent observations with a zero value, a sentinel date,
+        # or only one half of the pair; normalize every incomplete pair to honestly missing.
+        if sell_price is None or sell_timestamp is None:
+            sell_price = None
+            sell_timestamp = None
+        if buy_price is None or buy_timestamp is None:
+            buy_price = None
+            buy_timestamp = None
         for side, price, timestamp in (
             ("sell", sell_price, sell_timestamp),
             ("buy", buy_price, buy_timestamp),

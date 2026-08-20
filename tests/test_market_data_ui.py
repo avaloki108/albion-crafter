@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QHeaderView
 
-from albion_crafter.core.models import Item
+from albion_crafter.core.models import Item, MaterialRequirement, Recipe
 from albion_crafter.core.provenance import Provenance
 from albion_crafter.data.cities import CITIES
 from albion_crafter.database.catalog import CatalogImport, CatalogItem, CatalogRepository
@@ -40,6 +40,7 @@ from albion_crafter.ui.market_data import (
     HistoryRefreshWorker,
     MarketDataView,
     MarketRefreshWorker,
+    RoyalMarketSyncWorker,
 )
 
 
@@ -62,19 +63,40 @@ def _view(tmp_path) -> MarketDataView:
 
 
 def _seed_catalog(repository: CatalogRepository, item_ids: tuple[str, ...]) -> None:
+    if len(item_ids) < 2:
+        raise ValueError("test catalog needs an output and an ingredient")
     now = datetime.now(UTC)
+    catalog_items = [
+        Item(
+            item_id,
+            item_id,
+            4,
+            crafting_category="sword" if index == 0 else "",
+            max_quality=1,
+        )
+        for index, item_id in enumerate(item_ids)
+    ]
     repository.replace_all(
         [
             CatalogItem(
-                Item(item_id, item_id, 4, max_quality=1),
+                item,
                 1,
-                False,
+                index == 0,
                 Provenance.STATIC_GAME_DATA,
                 "test",
             )
-            for item_id in item_ids
+            for index, item in enumerate(catalog_items)
         ],
-        [],
+        [
+            Recipe(
+                catalog_items[0],
+                1,
+                tuple(MaterialRequirement(item.item_id, 1, True) for item in catalog_items[1:]),
+                item_value=1,
+                provenance=Provenance.STATIC_GAME_DATA,
+                source_version="test",
+            )
+        ],
         CatalogImport(
             "test",
             "https://example.invalid",
@@ -82,7 +104,7 @@ def _seed_catalog(repository: CatalogRepository, item_ids: tuple[str, ...]) -> N
             None,
             now,
             len(item_ids),
-            0,
+            1,
         ),
     )
 
@@ -394,7 +416,7 @@ def test_current_refresh_status_distinguishes_successful_empty_order_rows() -> N
     assert "Fetched (UTC) means AODP was checked" in text
 
 
-def test_full_catalog_refresh_ignores_manual_ids_and_starts_bounded_worker(
+def test_royal_market_refresh_ignores_manual_ids_and_starts_shared_sync_worker(
     qt_app,
     tmp_path,
 ) -> None:
@@ -413,15 +435,22 @@ def test_full_catalog_refresh_ignores_manual_ids_and_starts_bounded_worker(
 
     view.refresh_all_from_network()
 
-    assert isinstance(pool.worker, MarketRefreshWorker)
-    assert pool.worker.item_ids == ("T4_A", "T4_B")
-    assert "complete active catalog" in view.status.text()
+    assert isinstance(pool.worker, RoyalMarketSyncWorker)
+    assert pool.worker.service.universe.derive().item_ids == ("T4_A", "T4_B")
+    assert pool.worker.cities == (
+        "Bridgewatch",
+        "Fort Sterling",
+        "Lymhurst",
+        "Martlock",
+        "Thetford",
+    )
+    assert "supported market items" in view.status.text()
     assert not view.refresh_button.isEnabled()
     assert not view.full_refresh_button.isEnabled()
     view.shutdown()
 
 
-def test_startup_schedules_exactly_one_full_catalog_refresh(qt_app, tmp_path) -> None:
+def test_startup_is_offline_and_does_not_schedule_full_market_refresh(qt_app, tmp_path) -> None:
     database = Database(tmp_path / "startup-market-data-ui.db")
     database.initialize()
     catalog = CatalogRepository(database)
@@ -432,7 +461,6 @@ def test_startup_schedules_exactly_one_full_catalog_refresh(qt_app, tmp_path) ->
         catalog,
         SettingsRepository(database),
         MarketHistoryRepository(database),
-        auto_refresh_on_startup=True,
     )
 
     class RecordingPool:
@@ -447,10 +475,8 @@ def test_startup_schedules_exactly_one_full_catalog_refresh(qt_app, tmp_path) ->
     qt_app.processEvents()
     qt_app.processEvents()
 
-    assert len(pool.workers) == 1
-    assert isinstance(pool.workers[0], MarketRefreshWorker)
-    assert pool.workers[0].item_ids == ("T4_A", "T4_B")
-    assert "Automatic startup refresh" in view.status.text()
+    assert pool.workers == []
+    assert "Startup stays offline" in view.sync_last_result.text()
     view.shutdown()
 
 

@@ -28,9 +28,9 @@ V0.6 derives the arbitrage universe only from supported recipe outputs. Static r
 bounded identity/display/filter metadata to a trade; arbitrage economics does not pretend to have
 a recipe or station.
 
-### V0.6.1 static-coverage audit
+### V0.6.2 static-coverage audit
 
-V0.6.1 adds a bounded catalog-wide coverage classification and filter-aware matched counts. It
+V0.6.2 retains the bounded catalog-wide coverage classification and filter-aware matched counts. It
 uses the same conservative priority as production preflight: trusted/unambiguous recipe, known
 Item Value, known ingredient returnability, then verified station mapping. These are static-data
 coverage categories, not missing user settings.
@@ -60,11 +60,18 @@ application's 3,900-byte safety limit and per-operation batch count. Execution i
 bounded retry for transient failures. Cancellation is checked between batches/retries. Successful
 batches persist independently, and newer missing/older sides cannot overwrite a useful side.
 
-At application startup, and on **Refresh ALL catalog prices**, the app ignores manual ID fields
-and checks every canonical item in the active static catalog at Normal quality across all supported
-cities. The operation computes its exact request-plan bound, reports per-batch progress, remains
-cancellable, and persists each successful batch. The Market Data table renders only a useful
-bounded slice of the potentially much larger cache.
+Application startup performs no network requests. The explicit **REFRESH ROYAL MARKETS** action
+ignores manual ID fields and checks the intentional market universe at Normal quality across the
+selected Royal cities. That universe consists of all supported Craft/Refine outputs plus their
+required ingredients; unsupported raw catalog noise is excluded. The default city set is the five
+outer Royals, with optional Caerleon. Brecilien is not part of this synchronization.
+
+The operation computes its exact request-plan bound, reports per-batch progress, remains
+cancellable, and persists each successful batch before continuing. Batches contain at most 100
+item IDs and their complete encoded URLs stay within 3,900 bytes. Execution is sequential; 429
+and other transient failures use the existing bounded retry policy. The Market Data table renders
+only a bounded slice of the potentially much larger cache, while the reusable coverage service
+reports the complete selected-universe age distribution.
 
 A successful current-price request can still return an empty sell or buy side. That means AODP has
 no player-reported top-of-book observation for that exact item/city/quality; it is not zero and the
@@ -77,6 +84,10 @@ Repeated market keys across routes are de-duplicated. Trusted exact-side user ov
 separate table and never overwrite AODP cache.
 
 Top-of-book price is not available quantity, guaranteed execution, or order depth.
+
+The current-price source remains AODP directly. Albion Crafter does not scrape third-party market
+websites. A possible V0.7+ enhancement is a continuous AODP NATS listener; V0.6.2 deliberately
+implements only explicit REST synchronization.
 
 ## Historical reported activity
 

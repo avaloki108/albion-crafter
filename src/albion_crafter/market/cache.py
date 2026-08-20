@@ -8,6 +8,7 @@ from .aodp import (
     AODPClient,
     BatchFetchResult,
     BatchProgressCallback,
+    BatchSuccessCallback,
     CancellationCheck,
 )
 
@@ -25,13 +26,20 @@ class CachedMarketService:
         qualities: Sequence[int] = (1,),
         is_cancelled: CancellationCheck | None = None,
         on_progress: BatchProgressCallback | None = None,
+        on_batch_success: BatchSuccessCallback | None = None,
     ) -> BatchFetchResult:
         """Refresh sequentially, committing each successful batch immediately."""
+
+        def persist(records) -> None:
+            self.repository.upsert_many(records)
+            if on_batch_success is not None:
+                on_batch_success(records)
+
         return self.client.fetch_prices_batched(
             item_ids,
             cities=cities,
             qualities=qualities,
             is_cancelled=is_cancelled,
-            on_batch_success=self.repository.upsert_many,
+            on_batch_success=persist,
             on_progress=on_progress,
         )

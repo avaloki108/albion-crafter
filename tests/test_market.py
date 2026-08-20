@@ -78,6 +78,36 @@ def test_aodp_parser_preserves_timestamps_and_maps_zero_to_missing() -> None:
     assert record.buy_price_timestamp is None
 
 
+@pytest.mark.parametrize(
+    ("price", "observed_at"),
+    ((1234, "0001-01-01T00:00:00"), (0, "2026-01-01T12:00:00Z")),
+)
+def test_aodp_parser_normalizes_incomplete_side_pair_to_missing(
+    price: int,
+    observed_at: str,
+) -> None:
+    payload = json.dumps(
+        [
+            {
+                "item_id": "T4_TEST",
+                "city": "Bridgewatch",
+                "quality": 1,
+                "sell_price_min": price,
+                "sell_price_min_date": observed_at,
+                "buy_price_max": 0,
+                "buy_price_max_date": "0001-01-01T00:00:00",
+            }
+        ]
+    ).encode()
+
+    record = AODPClient(transport=lambda _url, _timeout: payload).fetch_prices(
+        ["T4_TEST"], cities=["Bridgewatch"]
+    )[0]
+
+    assert record.sell_price is None
+    assert record.sell_price_timestamp is None
+
+
 def test_aodp_parser_rejects_materially_future_dated_observation() -> None:
     now = datetime(2026, 8, 18, 12, tzinfo=UTC)
     payload = json.dumps(

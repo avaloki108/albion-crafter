@@ -1,6 +1,6 @@
 # Opportunity scanner
 
-The Craft Scanner remains the focused, independent crafting-comparison workflow. V0.6.1 does not
+The Craft Scanner remains the focused, independent crafting-comparison workflow. V0.6.2 does not
 silently turn it into the unified planner. Find Me Money is the bankroll surface for Craft, Refine,
 and Market Arbitrage; the scanner remains useful for inspecting crafting scenarios only.
 
@@ -16,7 +16,9 @@ When **Actionable only** produces an empty table, the scanner reports how many s
 checked and groups exclusions into player-facing market-data, unsupported-static, setup,
 profitability, trust/liquidity, and other-filter classes. **Show non-actionable opportunities**
 reruns the same cached scan with the actionability display filter removed so individual evidence
-reasons can be inspected.
+reasons can be inspected. When market-data rejections contribute to zero actionable results, the
+same warning also offers **OPEN ROYAL MARKET SYNC**. It navigates to the shared bounded sync rather
+than launching thousands of scanner-owned requests.
 
 ## Shared evidence policy
 

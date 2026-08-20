@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -46,6 +46,8 @@ from .settings_view import DEFAULT_SETTINGS
 
 class CraftScannerView(QWidget):
     """Background frontend for the GUI-independent opportunity service."""
+
+    market_sync_requested = Signal()
 
     DISPLAY_LIMIT = 500
     HEADERS = (
@@ -101,6 +103,10 @@ class CraftScannerView(QWidget):
         self.show_nonactionable_button.setVisible(False)
         self.show_nonactionable_button.clicked.connect(self._show_nonactionable)
         root.addWidget(self.show_nonactionable_button)
+        self.market_sync_button = QPushButton("OPEN ROYAL MARKET SYNC")
+        self.market_sync_button.setVisible(False)
+        self.market_sync_button.clicked.connect(self.market_sync_requested.emit)
+        root.addWidget(self.market_sync_button)
 
         filters = QGridLayout()
         self.search = QLineEdit()
@@ -425,6 +431,8 @@ class CraftScannerView(QWidget):
         empty_actionable = bool(snapshot.constraints.actionable_only and not snapshot.opportunities)
         self.zero_results.setVisible(empty_actionable)
         self.show_nonactionable_button.setVisible(empty_actionable)
+        market_rejections = dict(snapshot.rejection_class_counts).get("market_data", 0)
+        self.market_sync_button.setVisible(empty_actionable and market_rejections > 0)
         if empty_actionable:
             rejection_labels = {
                 "market_data": "missing or stale market prices",

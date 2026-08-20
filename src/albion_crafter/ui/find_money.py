@@ -75,6 +75,7 @@ from .common import SortableItem, age_text, money, percent
 from .find_money_worker import FindMoneyWorker, PlanningCancellationToken
 
 ServiceFactory = Callable[[Region], FindMoneyService]
+MAX_INLINE_PRICE_OVERRIDES = 10
 
 
 class TrustPreset(StrEnum):
@@ -89,6 +90,7 @@ class FindMoneyView(QWidget):
     plan_completed = Signal(object)
     focus_setup_requested = Signal()
     evidence_saved = Signal()
+    market_sync_requested = Signal()
     ACTION_HEADERS = (
         "Action",
         "Item",
@@ -187,8 +189,8 @@ class FindMoneyView(QWidget):
         intro = QLabel(
             "Enter your bankroll, choose a home city, and press FIND ME MONEY. The app checks "
             "crafting, refining, and configured outer-Royal arbitrage, refreshes only the market "
-            "data the plan still needs, and shows the best defensible plan. A separate "
-            "full-catalog current-price refresh runs in the background when the app starts."
+            "data the plan still needs, and shows the best defensible plan. For broad discovery, "
+            "first use Market Data → Refresh Royal Markets; startup itself remains offline."
         )
         intro.setWordWrap(True)
         intro.setObjectName("muted")
@@ -563,14 +565,23 @@ class FindMoneyView(QWidget):
         self.price_setup_status.setObjectName("muted")
         self.price_setup_status.setWordWrap(True)
         layout.addWidget(self.price_setup_status)
-        controls = QHBoxLayout()
-        save = QPushButton("Save prices & Continue")
-        save.clicked.connect(self.save_price_overrides_and_continue)
+        controls = QGridLayout()
+        self.price_setup_refresh_markets = QPushButton("REFRESH ROYAL MARKETS")
+        self.price_setup_refresh_markets.clicked.connect(self.market_sync_requested.emit)
+        self.price_setup_fast_preset = QPushButton("USE FAST / BROAD TRUST PRESET")
+        self.price_setup_fast_preset.clicked.connect(self._use_fast_price_setup_preset)
+        self.price_setup_manual_button = QPushButton("ENTER PRICES MANUALLY")
+        self.price_setup_manual_button.clicked.connect(self._show_manual_price_setup)
+        self.price_setup_save_button = QPushButton("Save prices & Continue")
+        self.price_setup_save_button.clicked.connect(self.save_price_overrides_and_continue)
         retry = QPushButton("Refresh again")
         retry.clicked.connect(self.find_money)
-        controls.addWidget(save)
-        controls.addWidget(retry)
-        controls.addStretch(1)
+        controls.addWidget(self.price_setup_refresh_markets, 0, 0)
+        controls.addWidget(self.price_setup_fast_preset, 0, 1)
+        controls.addWidget(self.price_setup_manual_button, 0, 2)
+        controls.addWidget(self.price_setup_save_button, 1, 0)
+        controls.addWidget(retry, 1, 1)
+        controls.setColumnStretch(3, 1)
         layout.addLayout(controls)
         self.price_setup.setVisible(False)
         root.addWidget(self.price_setup)
@@ -859,15 +870,18 @@ class FindMoneyView(QWidget):
         descriptions = {
             TrustPreset.FAST: (
                 "Fast / broad: accepts market observations up to 24 hours old, allows unknown "
-                "liquidity, and uses the explicit action cap without downloading history."
+                "liquidity, and uses the explicit action cap without downloading history. It is "
+                "the best discovery preset after Refresh Royal Markets."
             ),
             TrustPreset.CAREFUL: (
                 "Careful: uses market observations up to 4 hours old and historical liquidity "
-                "when available, while retaining opportunities whose liquidity is unknown."
+                "when available, while retaining opportunities whose liquidity is unknown. A "
+                "full sync can still return observations older than this window."
             ),
             TrustPreset.STRICT: (
                 "Strict: requires observations no older than 2 hours, current station fees, "
-                "history enrichment, and at least moderate liquidity."
+                "history enrichment, and at least moderate liquidity. It may reject many values "
+                "even immediately after a full sync because fetch time is not observation time."
             ),
         }
         self.trust_explanation.setText(descriptions[preset])
@@ -1360,6 +1374,38 @@ class FindMoneyView(QWidget):
             )
         )
         self._price_setup_requirements = requirements
+        many_missing = len(requirements) > MAX_INLINE_PRICE_OVERRIDES
+        self.price_setup.setTitle(
+            "MARKET COVERAGE TOO LOW" if many_missing else "MARKET DATA UNAVAILABLE"
+        )
+        if many_missing:
+            self.price_setup_note.setText(
+                f"{len(requirements):,} required prices are unavailable or outside the selected "
+                "freshness window. Refresh the broad Royal-market cache or use the 24-hour Fast "
+                "preset before resorting to a large manual-entry form. A full sync preserves the "
+                "real AODP observation ages; it cannot invent an order AODP has never seen."
+            )
+        else:
+            self.price_setup_note.setText(
+                "Sparse AODP refresh could not supply a usable current side. Missing values are "
+                "not treated as zero, and stale values are not silently re-dated. Enter the "
+                "price you currently see in Albion, or try refreshing again."
+            )
+        self.price_setup_table.setVisible(not many_missing)
+        self.price_setup_save_button.setVisible(not many_missing)
+        self.price_setup_manual_button.setVisible(many_missing)
+        self.price_setup_fast_preset.setVisible(many_missing)
+        self._populate_price_setup_table(requirements if not many_missing else ())
+        self.price_setup_status.setText(
+            f"{len(requirements):,} required market price"
+            f"{'s remain' if len(requirements) != 1 else ' remains'} unavailable or too old."
+        )
+        self.price_setup.setVisible(bool(requirements))
+
+    def _populate_price_setup_table(
+        self,
+        requirements: tuple[PriceRequirementAssessment, ...],
+    ) -> None:
         self.price_setup_table.setRowCount(len(requirements))
         for row, assessment in enumerate(requirements):
             requirement = assessment.requirement
@@ -1372,7 +1418,10 @@ class FindMoneyView(QWidget):
                 (
                     "Missing"
                     if assessment.price is None
-                    else f"{assessment.freshness.value.title()} · last {assessment.price:g}"
+                    else (
+                        f"AODP {assessment.price:g} · {assessment.freshness.value.title()} · "
+                        f"observed {age_text(assessment.observed_at)}"
+                    )
                 ),
             )
             for column, value in enumerate(values):
@@ -1384,11 +1433,20 @@ class FindMoneyView(QWidget):
                 5,
                 QTableWidgetItem(""),
             )
+
+    def _show_manual_price_setup(self) -> None:
+        self._populate_price_setup_table(self._price_setup_requirements)
+        self.price_setup_table.setVisible(True)
+        self.price_setup_save_button.setVisible(True)
+        self.price_setup_manual_button.setVisible(False)
         self.price_setup_status.setText(
-            f"{len(requirements):,} required market price"
-            f"{'s remain' if len(requirements) != 1 else ' remains'} unavailable or too old."
+            "Manual prices are stored separately as USER_OVERRIDE with the actual entry time."
         )
-        self.price_setup.setVisible(bool(requirements))
+
+    def _use_fast_price_setup_preset(self) -> None:
+        index = self.trust_preset.findData(TrustPreset.FAST.value)
+        self.trust_preset.setCurrentIndex(index)
+        self.find_money()
 
     def save_price_overrides_and_continue(self) -> None:
         if not self._price_setup_requirements:

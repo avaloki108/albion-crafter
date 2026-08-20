@@ -1,4 +1,4 @@
-# Find Me Money V0.6.1
+# Find Me Money V0.6.2
 
 Find Me Money is the GUI-independent bankroll planner for Craft, Refine, and Market Arbitrage. It
 turns explicit constraints and locally retained evidence into one immutable, independently
@@ -22,10 +22,17 @@ for the exact displayed Albion fee. If sparse AODP refresh still leaves a requir
 missing/stale/invalid, it offers an exact-side, exact-city user override inline. Both are persisted
 with user provenance and timestamp, then the full preflight is rebuilt before planning continues.
 
+The broad cache and sparse planner refresh are complementary. **Market Data → REFRESH ROYAL
+MARKETS** can populate supported outputs and their recipe inputs across the Royal cities before a
+blank discovery search. Find Me Money still computes and requests only its exact remaining
+missing/stale keys, so Simple Mode works without a prior full sync and never starts one
+automatically. If more than 10 required sides remain unresolved, Simple Mode recommends the broad
+sync or Fast preset before showing the optional large manual-entry form.
+
 The three trust presets are transparent bundles of existing V0.6 controls:
 
 - Fast / broad: 24-hour prices, stale-station allowance, no history refresh, unknown liquidity
-  accepted.
+  accepted; ideal for discovery after Royal Market Sync.
 - Careful: 4-hour prices, 24-hour station fees, history enabled, 20% historical-volume cap,
   unknown liquidity accepted.
 - Strict: 2-hour prices, 12-hour station fees, history enabled, 10% historical-volume cap, at

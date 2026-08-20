@@ -60,7 +60,7 @@ Resolution retains `derived_profile`, `manual_override`, or `unknown`, along wit
 mapping version, effective FCE, and missing keys. Unknown FCE disables only the focused variant;
 valid non-Focus production remains eligible.
 
-Schema V3 already stores levels, overrides, complete groups, and station fees. V0.6.1 keeps SQLite
+Schema V3 already stores levels, overrides, complete groups, and station fees. V0.6.2 keeps SQLite
 schema V4 and uses those rows unchanged. Offscreen tests prove that blank is not saved as zero,
 explicit zero is retained, calculated family/tier FCE resolves correctly, family completeness is
 visible, and manual overrides retain precedence.

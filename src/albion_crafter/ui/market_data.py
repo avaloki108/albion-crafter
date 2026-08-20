@@ -6,17 +6,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from threading import Event
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -35,12 +38,14 @@ from albion_crafter.database.database import (
 )
 from albion_crafter.database.v3 import HistoryCoverage, MarketHistoryRepository
 from albion_crafter.market.aodp import (
+    SAFE_AODP_URL_LENGTH,
     AODPClient,
     BatchFetchResult,
     BatchProgress,
     plan_price_requests,
 )
 from albion_crafter.market.cache import CachedMarketService
+from albion_crafter.market.coverage import MarketCoverageService, MarketCoverageSummary
 from albion_crafter.market.history import (
     AODPHistoryClient,
     HistoryFetchResult,
@@ -54,6 +59,15 @@ from albion_crafter.market.models import (
     Region,
     UserPriceOverride,
 )
+from albion_crafter.market.sync import (
+    DEFAULT_ROYAL_SYNC_CITIES,
+    OPTIONAL_ROYAL_SYNC_CITIES,
+    MarketSyncStateRepository,
+    RoyalMarketSyncProgress,
+    RoyalMarketSyncResult,
+    RoyalMarketSyncService,
+    RoyalMarketUniverseService,
+)
 
 from .common import SortableItem, age_text, money
 from .settings_view import DEFAULT_SETTINGS
@@ -64,7 +78,6 @@ MAX_HISTORY_CITIES = 3
 MAX_HISTORY_WINDOW_DAYS = 30
 HISTORY_RETENTION_DAYS = 30
 MAX_MARKET_TABLE_ROWS = 1_000
-CURRENT_REFRESH_MAX_PASSES = 3
 
 
 def _normalized_city(value: str) -> str:
@@ -80,13 +93,6 @@ class HistoryRefreshSummary:
     partial_coverage: int
     failed_coverage: int
     pruned_intervals: int
-
-
-@dataclass(frozen=True, slots=True)
-class MarketRefreshProgress:
-    pass_number: int
-    max_passes: int
-    batch: BatchProgress
 
 
 class MarketWorkerSignals(QObject):
@@ -121,41 +127,21 @@ class MarketRefreshWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            attempts: list[BatchFetchResult] = []
-            remaining_ids = self.item_ids
-            for pass_number in range(1, CURRENT_REFRESH_MAX_PASSES + 1):
-                if self._cancelled.is_set() or not remaining_ids:
-                    break
-                plan = plan_price_requests(
-                    remaining_ids,
-                    region=self.region,
-                    cities=CITIES,
-                    qualities=(1,),
-                )
-                client = self.client_factory(self.region, max_batches=plan.batch_count)
-                service = CachedMarketService(client, self.repository)
-                attempt = service.refresh(
-                    remaining_ids,
-                    cities=CITIES,
-                    qualities=(1,),
-                    is_cancelled=self._cancelled.is_set,
-                    on_progress=lambda progress, current_pass=pass_number: (
-                        self.signals.progress.emit(
-                            MarketRefreshProgress(
-                                current_pass,
-                                CURRENT_REFRESH_MAX_PASSES,
-                                progress,
-                            )
-                        )
-                    ),
-                )
-                attempts.append(attempt)
-                remaining_ids = tuple(
-                    item_id for failure in attempt.failures for item_id in failure.item_ids
-                )
-                if attempt.cancelled:
-                    break
-            result = self._combine_attempts(attempts)
+            plan = plan_price_requests(
+                self.item_ids,
+                region=self.region,
+                cities=CITIES,
+                qualities=(1,),
+            )
+            client = self.client_factory(self.region, max_batches=plan.batch_count)
+            service = CachedMarketService(client, self.repository)
+            result = service.refresh(
+                self.item_ids,
+                cities=CITIES,
+                qualities=(1,),
+                is_cancelled=self._cancelled.is_set,
+                on_progress=self.signals.progress.emit,
+            )
         except Exception as exc:  # worker boundary: errors must become visible status
             self.signals.error.emit(str(exc))
         else:
@@ -164,37 +150,43 @@ class MarketRefreshWorker(QRunnable):
             )
             self.signals.detailed.emit(result)
 
-    def _combine_attempts(self, attempts: Sequence[BatchFetchResult]) -> BatchFetchResult:
-        if not attempts:
-            return BatchFetchResult(
-                (),
-                (),
-                0,
-                items_requested=len(self.item_ids),
-                cancelled=self._cancelled.is_set(),
+
+class RoyalMarketSyncSignals(QObject):
+    progress = Signal(object)
+    finished = Signal(object)
+    error = Signal(str)
+
+
+class RoyalMarketSyncWorker(QRunnable):
+    def __init__(
+        self,
+        service: RoyalMarketSyncService,
+        region: Region,
+        cities: tuple[str, ...],
+    ) -> None:
+        super().__init__()
+        self.service = service
+        self.region = region
+        self.cities = cities
+        self.signals = RoyalMarketSyncSignals()
+        self._cancelled = Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self.service.synchronize(
+                self.region,
+                self.cities,
+                is_cancelled=self._cancelled.is_set,
+                on_progress=self.signals.progress.emit,
             )
-        completed_ids: dict[str, str] = {}
-        for attempt in attempts:
-            for item_id in attempt.completed_item_ids:
-                completed_ids.setdefault(item_id.casefold(), item_id)
-        final = attempts[-1]
-        return BatchFetchResult(
-            records=tuple(record for attempt in attempts for record in attempt.records),
-            failures=final.failures,
-            batch_count=sum(attempt.batch_count for attempt in attempts),
-            items_requested=len(self.item_ids),
-            successful_batches=sum(attempt.successful_batches for attempt in attempts),
-            elapsed_seconds=sum(attempt.elapsed_seconds for attempt in attempts),
-            record_failures=tuple(
-                failure for attempt in attempts for failure in attempt.record_failures
-            ),
-            request_attempts=sum(attempt.request_attempts for attempt in attempts),
-            retry_count=sum(attempt.retry_count for attempt in attempts),
-            completed_batches=sum(attempt.completed_batches for attempt in attempts),
-            cancelled=final.cancelled,
-            max_url_bytes=max(attempt.max_url_bytes for attempt in attempts),
-            completed_item_ids=tuple(completed_ids.values()),
-        )
+        except Exception as exc:  # worker boundary: errors must become visible status
+            self.signals.error.emit(str(exc))
+        else:
+            self.signals.finished.emit(result)
 
 
 class HistoryWorkerSignals(QObject):
@@ -385,8 +377,6 @@ class MarketDataView(QWidget):
         catalog: CatalogRepository,
         settings: SettingsRepository,
         history: MarketHistoryRepository | None = None,
-        *,
-        auto_refresh_on_startup: bool = False,
     ) -> None:
         super().__init__()
         self.repository = repository
@@ -394,10 +384,14 @@ class MarketDataView(QWidget):
         self.catalog = catalog
         self.settings = settings
         self.history = history
+        self.universe_service = RoyalMarketUniverseService(catalog)
+        self.sync_service = RoyalMarketSyncService(self.universe_service, repository)
+        self.coverage_service = MarketCoverageService(repository)
+        self.sync_state = MarketSyncStateRepository(settings)
         self.thread_pool = QThreadPool.globalInstance()
         self._workers: set[QRunnable] = set()
         self._closing = False
-        self._startup_refresh_pending = auto_refresh_on_startup
+        self._catalog_universe_before_update: int | None = None
         root = QVBoxLayout(self)
         title = QLabel("Market Data")
         title.setObjectName("pageTitle")
@@ -406,6 +400,69 @@ class MarketDataView(QWidget):
         self.status.setWordWrap(True)
         self.status.setObjectName("dataBanner")
         root.addWidget(self.status)
+
+        sync_group = QGroupBox("FULL ROYAL MARKET SYNC")
+        sync_layout = QVBoxLayout(sync_group)
+        sync_summary = QGridLayout()
+        sync_summary.addWidget(QLabel("Region"), 0, 0)
+        self.sync_region = QLabel()
+        sync_summary.addWidget(self.sync_region, 0, 1)
+        sync_summary.addWidget(QLabel("Market universe"), 1, 0)
+        self.sync_universe = QLabel()
+        self.sync_universe.setWordWrap(True)
+        sync_summary.addWidget(self.sync_universe, 1, 1)
+        sync_summary.addWidget(QLabel("Last full sync"), 2, 0)
+        self.sync_last_completed = QLabel()
+        self.sync_last_completed.setWordWrap(True)
+        sync_summary.addWidget(self.sync_last_completed, 2, 1)
+        sync_summary.addWidget(QLabel("Last sync result"), 3, 0)
+        self.sync_last_result = QLabel()
+        self.sync_last_result.setWordWrap(True)
+        sync_summary.addWidget(self.sync_last_result, 3, 1)
+        sync_layout.addLayout(sync_summary)
+
+        cities_row = QHBoxLayout()
+        cities_row.addWidget(QLabel("Market sync cities"))
+        selected_cities = set(self.sync_state.cities())
+        self.sync_city_checks: dict[str, QCheckBox] = {}
+        for city in (*DEFAULT_ROYAL_SYNC_CITIES, *OPTIONAL_ROYAL_SYNC_CITIES):
+            check = QCheckBox(city)
+            check.setChecked(city in selected_cities)
+            check.toggled.connect(self._save_selected_sync_cities)
+            self.sync_city_checks[city] = check
+            cities_row.addWidget(check)
+        select_outer = QPushButton("Select all Outer Royals")
+        select_outer.clicked.connect(self._select_outer_royals)
+        cities_row.addWidget(select_outer)
+        cities_row.addStretch(1)
+        sync_layout.addLayout(cities_row)
+
+        self.sync_progress = QProgressBar()
+        self.sync_progress.setRange(0, 1)
+        self.sync_progress.setValue(0)
+        self.sync_progress.setFormat("Ready")
+        sync_layout.addWidget(self.sync_progress)
+        sync_buttons = QHBoxLayout()
+        self.full_refresh_button = QPushButton("REFRESH ROYAL MARKETS")
+        self.full_refresh_button.setToolTip(
+            "Checks supported production outputs and their ingredients at Normal quality in "
+            "the selected cities. Manual ID fields are ignored."
+        )
+        self.full_refresh_button.clicked.connect(self.refresh_all_from_network)
+        self.cancel_sync_button = QPushButton("Cancel")
+        self.cancel_sync_button.setEnabled(False)
+        self.cancel_sync_button.clicked.connect(self.cancel_royal_sync)
+        sync_buttons.addWidget(self.full_refresh_button, 1)
+        sync_buttons.addWidget(self.cancel_sync_button)
+        sync_layout.addLayout(sync_buttons)
+        root.addWidget(sync_group)
+
+        coverage_group = QGroupBox("ROYAL MARKET CACHE")
+        coverage_layout = QVBoxLayout(coverage_group)
+        self.coverage_summary = QLabel()
+        self.coverage_summary.setWordWrap(True)
+        coverage_layout.addWidget(self.coverage_summary)
+        root.addWidget(coverage_group)
 
         actions = QHBoxLayout()
         actions.addWidget(QLabel("Current-price IDs"))
@@ -417,13 +474,6 @@ class MarketDataView(QWidget):
         self.refresh_button = QPushButton("Refresh current prices for IDs")
         self.refresh_button.clicked.connect(self.refresh_from_network)
         actions.addWidget(self.refresh_button)
-        self.full_refresh_button = QPushButton("Refresh ALL catalog prices")
-        self.full_refresh_button.setToolTip(
-            "Ignores the ID fields and checks every item in the active static catalog at "
-            "Normal quality across every supported marketplace city."
-        )
-        self.full_refresh_button.clicked.connect(self.refresh_all_from_network)
-        actions.addWidget(self.full_refresh_button)
         self.static_button = QPushButton("Update Static Game Data")
         self.static_button.setToolTip(
             "Updates recipes and Item Values only; it does not download market prices."
@@ -432,7 +482,7 @@ class MarketDataView(QWidget):
         actions.addWidget(self.static_button)
         root.addLayout(actions)
         market_note = QLabel(
-            "Automatic/current-price refresh checks AODP for every requested item and city. "
+            "Full and targeted current-price refreshes check AODP without re-dating observations. "
             "A row can remain Missing after a successful check when AODP has no reported player "
             "order. Static Item Value, station usage fees, and your Focus profile are separate "
             "inputs and cannot be supplied by the marketplace API."
@@ -440,6 +490,24 @@ class MarketDataView(QWidget):
         market_note.setWordWrap(True)
         market_note.setObjectName("muted")
         root.addWidget(market_note)
+
+        self.universe_group = QGroupBox("Advanced: Market universe inspection")
+        self.universe_group.setCheckable(True)
+        self.universe_group.setChecked(False)
+        universe_layout = QVBoxLayout(self.universe_group)
+        self.universe_note = QLabel()
+        self.universe_note.setWordWrap(True)
+        universe_layout.addWidget(self.universe_note)
+        self.universe_table = QTableWidget(0, 5)
+        self.universe_table.setHorizontalHeaderLabels(
+            ("Canonical item ID", "Display name", "Tier", "Enchantment", "Reason included")
+        )
+        self.universe_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.universe_table.verticalHeader().setVisible(False)
+        universe_layout.addWidget(self.universe_table)
+        self.universe_group.toggled.connect(self._toggle_universe_inspection)
+        self._toggle_universe_inspection(False)
+        root.addWidget(self.universe_group)
 
         history_group = QGroupBox("Optional AODP reported-activity history")
         history_layout = QFormLayout(history_group)
@@ -522,8 +590,6 @@ class MarketDataView(QWidget):
         override_layout.addRow(self.override_table)
         root.addWidget(override_group)
         self.reload()
-        if auto_refresh_on_startup:
-            QTimer.singleShot(0, self._run_startup_refresh)
 
     def _region(self) -> Region:
         return Region(str(self.settings.get("region", DEFAULT_SETTINGS["region"])))
@@ -542,63 +608,161 @@ class MarketDataView(QWidget):
                 f"A manual GUI refresh is limited to {MAX_CURRENT_ITEM_IDS} distinct item IDs."
             )
             return
-        self._start_current_refresh(item_ids, full_catalog=False, startup=False)
+        self._start_current_refresh(item_ids)
 
-    def refresh_all_from_network(self, *, startup: bool = False) -> None:
-        """Refresh every catalog item, ignoring both manual ID fields."""
+    def refresh_all_from_network(self) -> None:
+        """Run the intentional, user-triggered Royal-market synchronization."""
 
-        item_ids = self.catalog.list_item_ids()
-        if not item_ids:
-            if startup:
-                self._startup_refresh_pending = True
-                self.status.setText(
-                    "Startup marketplace refresh is waiting for a static catalog. "
-                    "Downloading and validating static game data first…"
-                )
-                self.update_static_data()
-            else:
-                self.status.setText(
-                    "Cannot refresh the full marketplace until Static Game Data has been "
-                    "imported. Click Update Static Game Data, then try again."
-                )
-            return
-        self._startup_refresh_pending = False
-        self._start_current_refresh(item_ids, full_catalog=True, startup=startup)
-
-    def _run_startup_refresh(self) -> None:
-        if self._closing or not self._startup_refresh_pending:
-            return
-        self.refresh_all_from_network(startup=True)
-
-    def _start_current_refresh(
-        self,
-        item_ids: tuple[str, ...],
-        *,
-        full_catalog: bool,
-        startup: bool,
-    ) -> None:
         if self._closing:
             return
-        if any(isinstance(worker, MarketRefreshWorker) for worker in self._workers):
+        if self._network_worker_running():
             self.status.setText(
-                "A current-price refresh is already running. Its successful batches are being "
-                "saved as they complete."
+                "Another network update is already running. Wait for it to finish or cancel the "
+                "Royal Market Sync."
             )
             return
-        if any(
-            isinstance(worker, (HistoryRefreshWorker, StaticDataWorker)) for worker in self._workers
-        ):
+        cities = self._selected_sync_cities()
+        if not cities:
+            self.status.setText("Select at least one Royal market city before refreshing.")
+            return
+        if self.catalog.import_metadata() is None:
+            self.status.setText(
+                "No supported market universe is available. Update Static Game Data first."
+            )
+            return
+        self.sync_state.save_cities(cities)
+        region = self._region()
+        self._set_network_running(True, royal_sync=True)
+        self.sync_progress.setRange(0, 0)
+        self.sync_progress.setFormat("Preparing bounded AODP request plan…")
+        self.status.setText(
+            f"Preparing supported market items from the catalog for {len(cities)} selected "
+            f"cities on {region.display_name}. This is a user-triggered background sync; "
+            "successful batches are saved immediately."
+        )
+        worker = RoyalMarketSyncWorker(self.sync_service, region, cities)
+        self._workers.add(worker)
+        worker.signals.progress.connect(
+            lambda progress, w=worker: self._royal_sync_progress(w, progress)
+        )
+        worker.signals.finished.connect(
+            lambda result, w=worker: self._royal_sync_finished(w, result)
+        )
+        worker.signals.error.connect(lambda message, w=worker: self._royal_sync_failed(w, message))
+        self.thread_pool.start(worker)
+
+    def cancel_royal_sync(self) -> None:
+        worker = next(
+            (active for active in self._workers if isinstance(active, RoyalMarketSyncWorker)),
+            None,
+        )
+        if worker is None:
+            return
+        worker.cancel()
+        self.cancel_sync_button.setEnabled(False)
+        self.status.setText(
+            "CANCELLING… Completed market batches have been kept. The current HTTP request will "
+            "finish safely before additional work stops."
+        )
+        self.sync_progress.setFormat("Cancelling after current batch…")
+
+    def _royal_sync_progress(
+        self,
+        worker: QRunnable,
+        progress: RoyalMarketSyncProgress,
+    ) -> None:
+        if self._closing or worker not in self._workers:
+            return
+        self.sync_progress.setRange(0, progress.planned_batches)
+        self.sync_progress.setValue(progress.completed_batches)
+        self.sync_progress.setFormat(
+            f"Batch {progress.completed_batches:,} / {progress.planned_batches:,}"
+        )
+        city_count = len(worker.cities) if isinstance(worker, RoyalMarketSyncWorker) else 0
+        self.status.setText(
+            f"Royal Market Sync — batch {progress.completed_batches:,}/"
+            f"{progress.planned_batches:,}; {city_count} cities; "
+            f"{progress.rows_received:,} rows received; "
+            f"{progress.useful_sides_received:,} useful price sides received and "
+            f"{progress.sides_updated:,} materially updated; "
+            f"{progress.failed_batches:,} failed so far. Successful batches are already saved."
+        )
+
+    def _royal_sync_finished(
+        self,
+        worker: QRunnable,
+        result: RoyalMarketSyncResult,
+    ) -> None:
+        self._workers.discard(worker)
+        if self._closing:
+            return
+        self.sync_state.save_result(result)
+        self._set_network_running(False)
+        self.sync_progress.setRange(0, max(result.planned_batches, 1))
+        self.sync_progress.setValue(result.completed_batches)
+        self.sync_progress.setFormat(
+            "Cancelled — completed data kept"
+            if result.cancelled
+            else f"{result.successful_batches:,} successful / {result.planned_batches:,} planned"
+        )
+        self.status.setText(self._royal_sync_status(result))
+        self.reload(update_status=False)
+        self.data_changed.emit()
+
+    @staticmethod
+    def _royal_sync_status(result: RoyalMarketSyncResult) -> str:
+        state = {
+            "complete": "COMPLETE",
+            "partial": "PARTIAL — retry the sync to revisit failed coverage",
+            "failed": "FAILED — no batch completed successfully",
+            "cancelled": "CANCELLED — completed data was kept",
+        }[result.status]
+        return (
+            f"Royal Market Sync {state}: {result.item_count:,} supported items × "
+            f"{result.city_count} cities; {result.successful_batches:,}/"
+            f"{result.planned_batches:,} batches successful, {result.failed_batches:,} failed; "
+            f"{result.rows_returned:,} rows returned; {result.useful_sides_received:,} useful "
+            f"sides received, {result.sides_updated:,} materially updated, and "
+            f"{result.missing_sides:,} missing sides; "
+            f"{result.observations_le_2h:,} observations ≤2h, "
+            f"{result.observations_le_4h:,} ≤4h, {result.observations_le_24h:,} ≤24h, "
+            f"{result.observations_older_24h:,} >24h; "
+            f"{result.rows_with_no_usable_side:,} requested item/city rows had no usable side "
+            "returned; "
+            f"{result.http_attempts:,} HTTP attempts, {result.retry_count:,} retries, "
+            f"{len(result.record_failures):,} malformed rows skipped, maximum encoded URL "
+            f"{result.max_url_bytes:,}/{SAFE_AODP_URL_LENGTH:,} bytes, "
+            f"{result.elapsed_seconds:.2f}s. Fetching now "
+            "never changes an older observation's "
+            "timestamp or fabricates an absent order."
+        )
+
+    def _royal_sync_failed(self, worker: QRunnable, message: str) -> None:
+        self._workers.discard(worker)
+        if self._closing:
+            return
+        self._set_network_running(False)
+        self.sync_progress.setRange(0, 1)
+        self.sync_progress.setValue(0)
+        self.sync_progress.setFormat("Stopped")
+        self.status.setText(
+            "Royal Market Sync stopped unexpectedly. Successful earlier batches remain cached "
+            f"and existing observations were preserved. Error: {message}"
+        )
+
+    def _start_current_refresh(self, item_ids: tuple[str, ...]) -> None:
+        if self._closing:
+            return
+        if self._network_worker_running():
             self.status.setText(
                 "Another network update is already running. Wait for it to finish before "
-                "starting the current-price refresh."
+                "refreshing the selected IDs."
             )
             return
         region = self._region()
-        self._set_current_refresh_running(True)
-        scope = "the complete active catalog" if full_catalog else "the selected IDs"
-        startup_text = "Automatic startup refresh: " if startup else ""
+        self._set_network_running(True)
         self.status.setText(
-            f"{startup_text}checking {len(item_ids):,} item IDs from {scope} at Normal quality "
+            f"Checking {len(item_ids):,} selected item IDs at Normal quality "
             f"across {len(CITIES)} supported cities on {region.display_name} AODP. "
             "Requests run sequentially in bounded background batches; every successful batch "
             "is saved immediately…"
@@ -606,30 +770,25 @@ class MarketDataView(QWidget):
         worker = MarketRefreshWorker(region, self.repository, item_ids)
         self._workers.add(worker)
         worker.signals.progress.connect(
-            lambda progress, w=worker, full=full_catalog: self._refresh_progress(w, progress, full)
+            lambda progress, w=worker: self._refresh_progress(w, progress)
         )
         worker.signals.detailed.connect(
-            lambda result, w=worker, full=full_catalog: self._refresh_detailed_finished(
-                w, result, full
-            )
+            lambda result, w=worker: self._refresh_detailed_finished(w, result)
         )
-        worker.signals.error.connect(
-            lambda message, w=worker, full=full_catalog: self._refresh_failed(w, message, full)
-        )
+        worker.signals.error.connect(lambda message, w=worker: self._refresh_failed(w, message))
         self.thread_pool.start(worker)
 
     def _refresh_progress(
         self,
         worker: QRunnable,
         progress: BatchProgress,
-        full_catalog: bool,
     ) -> None:
         if self._closing or worker not in self._workers:
             return
-        scope = "Full-catalog refresh" if full_catalog else "Current-price refresh"
         outcome = "saved" if progress.successful else "failed"
         self.status.setText(
-            f"{scope}: batch {progress.completed_batches:,}/{progress.batch_count:,} "
+            f"Current-price refresh: batch {progress.completed_batches:,}/"
+            f"{progress.batch_count:,} "
             f"{outcome}; latest batch returned {progress.records_returned:,} item/city rows. "
             "Successful batches are already persisted. The app remains usable while this runs."
         )
@@ -638,21 +797,18 @@ class MarketDataView(QWidget):
         self,
         worker: QRunnable,
         result: BatchFetchResult,
-        full_catalog: bool = False,
     ) -> None:
         self._workers.discard(worker)
         if self._closing:
             return
-        self._set_current_refresh_running(False)
-        self.status.setText(self._current_refresh_status(result, full_catalog=full_catalog))
+        self._set_network_running(False)
+        self.status.setText(self._current_refresh_status(result))
         self.reload(update_status=False)
         self.data_changed.emit()
 
     @staticmethod
     def _current_refresh_status(
         result: BatchFetchResult,
-        *,
-        full_catalog: bool = False,
     ) -> str:
         sell_prices = sum(record.sell_price is not None for record in result.records)
         buy_prices = sum(record.buy_price is not None for record in result.records)
@@ -665,16 +821,11 @@ class MarketDataView(QWidget):
             if empty_rows
             else ""
         )
-        prefix = (
-            "Full-catalog AODP current-price refresh"
-            if full_catalog
-            else "AODP current-price check"
-        )
         cancelled_note = (
             " Refresh was cancelled after the saved batches." if result.cancelled else ""
         )
         return (
-            f"{prefix}: {result.items_requested:,} item IDs; "
+            f"AODP current-price check: {result.items_requested:,} item IDs; "
             f"{result.http_batches} HTTP batches "
             f"({result.successful_batches} successful, {result.failed_batches} failed); "
             f"{sell_prices:,} sell-order prices and {buy_prices:,} buy-order prices returned "
@@ -684,40 +835,35 @@ class MarketDataView(QWidget):
             "was checked; Sell/Buy Observation is the timestamp of an actual reported order."
         )
 
-    def _refresh_finished(
-        self,
-        worker: QRunnable,
-        records: int,
-        failures: int,
-        batches: int,
-    ) -> None:
-        self._workers.discard(worker)
-        self._set_current_refresh_running(False)
-        self.status.setText(
-            f"AODP refresh: {records} records from {batches - failures}/{batches} successful "
-            f"batches; {failures} failed. Successful observations were merged side-by-side; "
-            "existing cache timestamps were preserved where incoming data was missing or older."
-        )
-        self.reload(update_status=False)
-        self.data_changed.emit()
-
     def _refresh_failed(
         self,
         worker: QRunnable,
         message: str,
-        full_catalog: bool = False,
     ) -> None:
         self._workers.discard(worker)
         if self._closing:
             return
-        self._set_current_refresh_running(False)
-        scope = "Full-catalog market refresh" if full_catalog else "Live market refresh"
+        self._set_network_running(False)
         self.status.setText(
-            f"{scope} stopped. Successful earlier batches remain saved and all prior cache rows "
-            f"were preserved. Error: {message}"
+            "Live market refresh stopped. Successful earlier batches remain saved and all prior "
+            f"cache rows were preserved. Error: {message}"
         )
 
-    def _set_current_refresh_running(self, running: bool) -> None:
+    def _network_worker_running(self) -> bool:
+        return any(
+            isinstance(
+                worker,
+                (
+                    RoyalMarketSyncWorker,
+                    MarketRefreshWorker,
+                    HistoryRefreshWorker,
+                    StaticDataWorker,
+                ),
+            )
+            for worker in self._workers
+        )
+
+    def _set_network_running(self, running: bool, *, royal_sync: bool = False) -> None:
         if not running:
             self._set_network_buttons_idle()
             return
@@ -725,22 +871,38 @@ class MarketDataView(QWidget):
         self.full_refresh_button.setEnabled(False)
         self.history_button.setEnabled(False)
         self.static_button.setEnabled(False)
+        self.cancel_sync_button.setEnabled(royal_sync)
+        for check in self.sync_city_checks.values():
+            check.setEnabled(False)
 
     def _set_network_buttons_idle(self) -> None:
-        network_running = any(
-            isinstance(worker, (MarketRefreshWorker, HistoryRefreshWorker, StaticDataWorker))
-            for worker in self._workers
-        )
+        network_running = self._network_worker_running()
         self.refresh_button.setEnabled(not network_running)
         self.full_refresh_button.setEnabled(not network_running)
         self.history_button.setEnabled(not network_running and self.history is not None)
         self.static_button.setEnabled(not network_running)
+        self.cancel_sync_button.setEnabled(False)
+        for check in self.sync_city_checks.values():
+            check.setEnabled(not network_running)
+
+    def _selected_sync_cities(self) -> tuple[str, ...]:
+        return tuple(city for city, check in self.sync_city_checks.items() if check.isChecked())
+
+    def _select_outer_royals(self) -> None:
+        for city, check in self.sync_city_checks.items():
+            check.setChecked(city in DEFAULT_ROYAL_SYNC_CITIES)
+
+    def _save_selected_sync_cities(self) -> None:
+        cities = self._selected_sync_cities()
+        if not cities:
+            return
+        try:
+            self.sync_state.save_cities(cities)
+        except (TypeError, ValueError):
+            return
 
     def refresh_history_from_network(self) -> None:
-        if any(
-            isinstance(worker, (MarketRefreshWorker, HistoryRefreshWorker, StaticDataWorker))
-            for worker in self._workers
-        ):
+        if self._network_worker_running():
             self.status.setText(
                 "Another network update is already running. Wait for it to finish before "
                 "refreshing history."
@@ -779,10 +941,7 @@ class MarketDataView(QWidget):
 
         region = self._region()
         window_days = self.history_window.value()
-        self.history_button.setEnabled(False)
-        self.refresh_button.setEnabled(False)
-        self.full_refresh_button.setEnabled(False)
-        self.static_button.setEnabled(False)
+        self._set_network_running(True)
         self.status.setText(
             f"Requesting {window_days} days of six-hour reported activity for "
             f"{len(item_ids)} item IDs in {len(cities)} cities from "
@@ -839,22 +998,14 @@ class MarketDataView(QWidget):
         )
 
     def update_static_data(self) -> None:
-        if any(
-            isinstance(worker, (MarketRefreshWorker, HistoryRefreshWorker))
-            for worker in self._workers
-        ):
+        if self._network_worker_running():
             self.status.setText(
                 "Another network update is already running. Wait for it to finish before "
                 "updating static game data."
             )
             return
-        if any(isinstance(worker, StaticDataWorker) for worker in self._workers):
-            self.status.setText("A static game-data update is already running in the background.")
-            return
-        self.static_button.setEnabled(False)
-        self.refresh_button.setEnabled(False)
-        self.full_refresh_button.setEnabled(False)
-        self.history_button.setEnabled(False)
+        self._catalog_universe_before_update = self.universe_service.derive().item_count
+        self._set_network_running(True)
         self.status.setText(
             "Checking the maintained ao-data/ao-bin-dumps release and importing it in the "
             "background. Cached release files will be reused when possible…"
@@ -874,34 +1025,34 @@ class MarketDataView(QWidget):
         if self._closing:
             return
         self._set_network_buttons_idle()
+        previous_universe = self._catalog_universe_before_update
+        self._catalog_universe_before_update = None
+        self.universe_service.invalidate()
+        universe = self.universe_service.derive()
+        tracked = set(self.repository.list_tracked_item_ids(self._region()))
+        untracked = len(set(universe.item_ids) - tracked)
         message = (
             f"Static import complete: {items:,} items and {recipes:,} craftable variants "
-            f"from commit {version}. {self._catalog_health_text()}"
+            f"from commit {version}. Market universe: "
+            f"{previous_universe if previous_universe is not None else 0:,} → "
+            f"{universe.item_count:,}; {untracked:,} current universe items have no cached row. "
+            f"Existing healthy market prices were preserved. {self._catalog_health_text()}"
         )
-        if self._startup_refresh_pending:
-            message += " Starting the automatic full-catalog marketplace refresh now…"
         self.status.setText(message)
+        self._refresh_sync_dashboard()
         self.catalog_changed.emit()
-        if self._startup_refresh_pending:
-            QTimer.singleShot(0, self._run_startup_refresh)
 
     def _static_failed(self, worker: QRunnable, message: str) -> None:
         self._workers.discard(worker)
         if self._closing:
             return
-        startup_was_waiting = self._startup_refresh_pending
-        self._startup_refresh_pending = False
+        self._catalog_universe_before_update = None
         self._set_network_buttons_idle()
         self.status.setText(
             "Static-data update failed. The previously imported catalog remains intact. Error: "
             + message
             + ". "
             + self._catalog_health_text()
-            + (
-                " Automatic marketplace refresh could not start without an active catalog."
-                if startup_was_waiting
-                else ""
-            )
         )
 
     def set_override(self) -> None:
@@ -1010,12 +1161,101 @@ class MarketDataView(QWidget):
             for column, value in enumerate(values):
                 self.override_table.setItem(row, column, SortableItem(value, value))
         self.override_table.resizeColumnsToContents()
+        self._refresh_sync_dashboard()
         if update_status:
             self.status.setText(
                 f"{self._market_health_text(records, policy, total_rows=total_records)}; "
                 f"{len(overrides)} separate user overrides for {region.display_name}; "
                 f"{self._catalog_health_text()}; {self._history_health_text(region)}."
             )
+
+    def _refresh_sync_dashboard(self) -> None:
+        region = self._region()
+        universe = self.universe_service.derive()
+        cities = self._selected_sync_cities()
+        self.sync_region.setText(region.display_name)
+        self.sync_universe.setText(
+            f"{universe.item_count:,} deduplicated market IDs from "
+            f"{universe.supported_output_items:,} supported production outputs and "
+            f"{universe.required_ingredient_items:,} required ingredient IDs "
+            f"({universe.total_catalog_items:,} total catalog records audited)."
+        )
+        last = self.sync_state.last_result()
+        if last is None:
+            self.sync_last_completed.setText("Never")
+            self.sync_last_result.setText(
+                "No full sync has run. Startup stays offline; press REFRESH ROYAL MARKETS when "
+                "you want a sync."
+            )
+        else:
+            self.sync_last_completed.setText(last.completed_at.isoformat())
+            self.sync_last_result.setText(
+                f"{last.status} · {last.item_count:,} items · {len(last.cities)} cities · "
+                f"{last.successful_batches:,}/"
+                f"{last.planned_batches:,} batches · {last.sides_updated:,} sides updated."
+            )
+        if not cities or not universe.item_ids:
+            self.coverage_summary.setText(
+                "Coverage is unavailable until catalog items and cities exist."
+            )
+            return
+        coverage = self.coverage_service.summary(
+            region,
+            cities,
+            universe.item_ids,
+            as_of=datetime.now(UTC),
+        )
+        self.coverage_summary.setText(self._coverage_text(coverage))
+        if self.universe_group.isChecked():
+            self._populate_universe_table(universe)
+
+    @staticmethod
+    def _coverage_text(summary: MarketCoverageSummary) -> str:
+        city_lines = " · ".join(
+            f"{city.city}: {city.coverage_4h_percent:.1f}% rows ≤4h"
+            for city in summary.city_coverage
+        )
+        return (
+            f"Items tracked: {summary.item_count:,} · Cities: {summary.city_count} · "
+            f"Expected item/city rows: {summary.expected_rows:,} · "
+            f"Cached rows: {summary.cached_rows:,}\n"
+            f"Price-side observations ≤2h: {summary.observations_le_2h:,} · "
+            f"≤4h: {summary.observations_le_4h:,} · "
+            f"≤24h: {summary.observations_le_24h:,} · "
+            f">24h: {summary.observations_older_24h:,} · "
+            f"Missing sides: {summary.missing_sides:,} · "
+            f"Rows with no usable price: {summary.rows_with_no_usable_price:,}\n" + city_lines
+        )
+
+    def _toggle_universe_inspection(self, visible: bool) -> None:
+        self.universe_note.setVisible(visible)
+        self.universe_table.setVisible(visible)
+        if visible:
+            self._populate_universe_table(self.universe_service.derive())
+
+    def _populate_universe_table(self, universe) -> None:
+        display_limit = 500
+        shown = universe.items[:display_limit]
+        self.universe_note.setText(
+            f"Showing {len(shown):,} of {universe.item_count:,} included IDs. The display cap is "
+            "not a synchronization cap."
+        )
+        self.universe_table.setUpdatesEnabled(False)
+        try:
+            self.universe_table.setRowCount(len(shown))
+            for row, entry in enumerate(shown):
+                values = (
+                    entry.item.item_id,
+                    entry.item.display_name,
+                    "Unknown" if entry.item.tier is None else str(entry.item.tier),
+                    str(entry.item.enchantment),
+                    " + ".join(entry.reasons),
+                )
+                for column, value in enumerate(values):
+                    self.universe_table.setItem(row, column, SortableItem(value, value))
+        finally:
+            self.universe_table.setUpdatesEnabled(True)
+        self.universe_table.resizeColumnsToContents()
 
     @staticmethod
     def _csv_values(text: str) -> tuple[str, ...]:
@@ -1162,7 +1402,6 @@ class MarketDataView(QWidget):
         if self._closing:
             return
         self._closing = True
-        self._startup_refresh_pending = False
         for worker in tuple(self._workers):
             cancel = getattr(worker, "cancel", None)
             if callable(cancel):
@@ -1172,6 +1411,8 @@ class MarketDataView(QWidget):
                 continue
             if isinstance(worker, MarketRefreshWorker):
                 names = ("progress", "detailed", "error")
+            elif isinstance(worker, RoyalMarketSyncWorker):
+                names = ("progress", "finished", "error")
             else:
                 names = ("finished", "error")
             for name in names:
