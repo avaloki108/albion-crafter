@@ -300,17 +300,23 @@ def test_find_money_page_scrolls_instead_of_compressing_results(qt_app, tmp_path
     view.show()
     qt_app.processEvents()
 
-    scrollbar = view.scroll_area.verticalScrollBar()
+    vertical_scrollbar = view.scroll_area.verticalScrollBar()
+    horizontal_scrollbar = view.scroll_area.horizontalScrollBar()
     assert view.scroll_area.widgetResizable()
+    assert view.scroll_content.minimumWidth() == view.WORKSPACE_MIN_WIDTH
     assert view.tabs.minimumHeight() == 1_000
     assert view.action_splitter.minimumHeight() == 560
     assert not view.action_splitter.childrenCollapsible()
     assert view.action_table.minimumHeight() == 300
     assert view.action_detail.minimumHeight() == 220
-    assert scrollbar.maximum() > 0
-    scrollbar.setValue(scrollbar.maximum())
+    assert vertical_scrollbar.maximum() > 0
+    assert horizontal_scrollbar.maximum() > 0
+    assert horizontal_scrollbar.isVisible()
+    vertical_scrollbar.setValue(vertical_scrollbar.maximum())
+    horizontal_scrollbar.setValue(horizontal_scrollbar.maximum())
     qt_app.processEvents()
-    assert scrollbar.value() == scrollbar.maximum()
+    assert vertical_scrollbar.value() == vertical_scrollbar.maximum()
+    assert horizontal_scrollbar.value() == horizontal_scrollbar.maximum()
 
     view.close()
 

@@ -131,6 +131,7 @@ class FindMoneyView(QWidget):
         "Why excluded",
     )
     MAX_EXCLUDED_ROWS = 500
+    WORKSPACE_MIN_WIDTH = 2_400
     STAGES = tuple(PlanningStage)
 
     def __init__(
@@ -173,6 +174,10 @@ class FindMoneyView(QWidget):
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_content = QWidget()
         self.scroll_content.setObjectName("findMoneyScrollContent")
+        # The plan table has 21 player-facing columns. Keep the document wide
+        # enough for them and let the outer scroll area provide a persistent,
+        # browser-like left/right path instead of squeezing them off-screen.
+        self.scroll_content.setMinimumWidth(self.WORKSPACE_MIN_WIDTH)
         root = QVBoxLayout(self.scroll_content)
         self.scroll_area.setWidget(self.scroll_content)
         outer.addWidget(self.scroll_area)
