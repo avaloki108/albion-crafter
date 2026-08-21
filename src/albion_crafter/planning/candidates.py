@@ -18,6 +18,7 @@ from albion_crafter.core.crafting_profile import CraftingSkillProfile
 from albion_crafter.core.freshness import FreshnessPolicy
 from albion_crafter.core.mechanics import CURRENT_RULES, MechanicsRules
 from albion_crafter.core.models import ActionKind, CraftingContext, CraftResult, SaleMethod
+from albion_crafter.market.history import MarketHistoryInterval
 from albion_crafter.market.liquidity import LiquidityAssessment, LiquidityLevel
 from albion_crafter.market.models import MarketPrice, MarketSide, Region, UserPriceOverride
 from albion_crafter.opportunity.pricing import PricingIndex
@@ -124,6 +125,7 @@ class PlanCandidateEvaluator:
         crafting_profile: CraftingSkillProfile,
         constraints: FindMoneyConstraints,
         *,
+        history: Iterable[MarketHistoryInterval] = (),
         liquidity_by_key: Mapping[LiquidityKey, LiquidityAssessment] | None = None,
         as_of: datetime | None = None,
         progress: ProgressCallback | None = None,
@@ -136,7 +138,7 @@ class PlanCandidateEvaluator:
         routes = tuple(sorted(eligible, key=_eligible_order))
         price_rows = tuple(market_prices)
         override_rows = tuple(overrides)
-        price_index = PricingIndex(price_rows, override_rows)
+        price_index = PricingIndex(price_rows, override_rows, history)
         profile = replace(crafting_profile, available_focus=constraints.available_focus)
         market_policy = FreshnessPolicy(constraints.max_market_age)
         station_policy = FreshnessPolicy(constraints.max_station_fee_age)
@@ -841,6 +843,18 @@ def _candidate_evidence(
             "provenance": line.provenance.value,
             "freshness": line.freshness.value,
             "role": line.role,
+            "source": line.source.value,
+            "confidence": line.confidence.value,
+            "current_price": line.current_price,
+            "current_observed_at": (
+                line.current_timestamp.astimezone(UTC).isoformat()
+                if line.current_timestamp is not None
+                else None
+            ),
+            "historical_reference_price": line.historical_reference_price,
+            "historical_days_used": line.historical_days_used,
+            "historical_total_volume": line.historical_total_volume,
+            "historical_avg_daily_volume_7d": line.historical_avg_daily_volume_7d,
         }
         for line in price_evidence
     ]

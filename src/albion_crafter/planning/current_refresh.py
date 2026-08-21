@@ -7,8 +7,12 @@ from time import monotonic
 
 from albion_crafter.database.database import MarketPriceRepository
 from albion_crafter.market.aodp import AODPClient, BatchFetchResult, CancellationCheck, Clock
+from albion_crafter.market.backfill import (
+    MissingSellHistoryBackfillResult,
+    MissingSellHistoryBackfillService,
+)
 from albion_crafter.market.cache import CachedMarketService
-from albion_crafter.market.models import Region
+from albion_crafter.market.models import MarketSide, Region
 
 from .models import MarketKey, RefreshStatistics
 from .preflight import MarketRefreshPlan, PlannedAODPBatch
@@ -71,6 +75,12 @@ class CurrentRefreshResult:
     max_url_bytes: int
     cancelled: bool
     outcomes: tuple[CurrentRefreshBatchOutcome, ...]
+    history_keys_requested: int = 0
+    historical_estimates_available: int = 0
+    history_keys_unresolved: int = 0
+    history_batches_planned: int = 0
+    history_batches_failed: int = 0
+    history_record_failures: int = 0
 
     @property
     def keys_requested(self) -> int:
@@ -97,7 +107,12 @@ class CurrentRefreshResult:
 
     @property
     def has_errors(self) -> bool:
-        return bool(self.batches_failed or self.record_failures)
+        return bool(
+            self.batches_failed
+            or self.record_failures
+            or self.history_batches_failed
+            or self.history_record_failures
+        )
 
     @property
     def is_partial(self) -> bool:
@@ -124,11 +139,13 @@ class CurrentMarketRefreshExecutor:
         *,
         client_factory: ClientFactory = AODPClient,
         service_factory: ServiceFactory = CachedMarketService,
+        history_backfill: MissingSellHistoryBackfillService | None = None,
         clock: Clock = monotonic,
     ) -> None:
         self.repository = repository
         self.client_factory = client_factory
         self.service_factory = service_factory
+        self.history_backfill = history_backfill
         self._clock = clock
 
     def execute(
@@ -172,6 +189,7 @@ class CurrentMarketRefreshExecutor:
         records_loaded = 0
         record_failures = 0
         cancelled = False
+        history_results: list[MissingSellHistoryBackfillResult] = []
 
         for planned_batch_number, group in enumerate(plan.batches, start=1):
             if is_cancelled is not None and is_cancelled():
@@ -214,6 +232,40 @@ class CurrentMarketRefreshExecutor:
             if cancelled:
                 break
 
+        if not cancelled and self.history_backfill is not None:
+            sell_groups: dict[tuple[Region, str, int], list[str]] = {}
+            for assessment in plan.assessments:
+                requirement = assessment.requirement
+                if (
+                    not requirement.required_for_actionability
+                    or requirement.side is not MarketSide.SELL_ORDER
+                ):
+                    continue
+                key = requirement.key
+                sell_groups.setdefault((key.region, key.city, key.quality), []).append(key.item_id)
+            for (region, city, quality), item_ids in sorted(
+                sell_groups.items(),
+                key=lambda value: (
+                    value[0][0].value,
+                    value[0][1].casefold(),
+                    value[0][2],
+                ),
+            ):
+                if is_cancelled is not None and is_cancelled():
+                    cancelled = True
+                    break
+                history_result = self.history_backfill.refresh_missing(
+                    region,
+                    tuple(dict.fromkeys(item_ids)),
+                    (city,),
+                    quality=quality,
+                    is_cancelled=is_cancelled,
+                )
+                history_results.append(history_result)
+                if history_result.cancelled:
+                    cancelled = True
+                    break
+
         return CurrentRefreshResult(
             requested_keys=requested_keys,
             groups_planned=len(plan.batches),
@@ -230,6 +282,12 @@ class CurrentMarketRefreshExecutor:
             max_url_bytes=max_url_bytes,
             cancelled=cancelled,
             outcomes=tuple(outcomes),
+            history_keys_requested=sum(value.requested_count for value in history_results),
+            historical_estimates_available=sum(value.resolved_count for value in history_results),
+            history_keys_unresolved=sum(value.unresolved_count for value in history_results),
+            history_batches_planned=sum(value.batches_planned for value in history_results),
+            history_batches_failed=sum(value.batches_failed for value in history_results),
+            history_record_failures=sum(value.record_failures for value in history_results),
         )
 
     @staticmethod

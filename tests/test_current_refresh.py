@@ -1,5 +1,6 @@
 import json
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
@@ -10,6 +11,7 @@ from albion_crafter.core.freshness import Freshness
 from albion_crafter.core.provenance import Provenance
 from albion_crafter.database.database import Database, MarketPriceRepository
 from albion_crafter.market.aodp import AODPClient, plan_price_requests
+from albion_crafter.market.backfill import MissingSellHistoryBackfillResult
 from albion_crafter.market.models import MarketSide, Region
 from albion_crafter.planning.current_refresh import CurrentMarketRefreshExecutor
 from albion_crafter.planning.models import MarketKey, PriceRequirement, PriceRole
@@ -215,6 +217,47 @@ def test_sparse_refresh_cancels_between_exact_groups(tmp_path) -> None:
     assert result.records_loaded == 1
     assert repository.get("ONE", "Bridgewatch", 1, Region.AMERICAS) is not None
     assert repository.get("TWO", "Martlock", 1, Region.AMERICAS) is None
+
+
+def test_sparse_refresh_automatically_backfills_only_required_sell_sides(tmp_path) -> None:
+    database = Database(tmp_path / "current-with-history.db")
+    database.initialize()
+    repository = MarketPriceRepository(database)
+    keys = (
+        MarketKey(Region.AMERICAS, "SELL_ITEM", "Bridgewatch", 1),
+        MarketKey(Region.AMERICAS, "BUY_ITEM", "Bridgewatch", 1),
+    )
+    base = _refresh_plan(keys)
+    buy_assessment = replace(
+        base.assessments[1],
+        requirement=PriceRequirement(keys[1], MarketSide.BUY_ORDER, PriceRole.OUTPUT),
+    )
+    plan = MarketRefreshPlan((base.assessments[0], buy_assessment), base.batches, False)
+
+    class RecordingBackfill:
+        calls = []
+
+        def refresh_missing(self, region, item_ids, cities, *, quality, is_cancelled):
+            self.calls.append((region, item_ids, cities, quality, is_cancelled))
+            key = (item_ids[0], cities[0], quality)
+            return MissingSellHistoryBackfillResult((key,), (key,), (), ())
+
+    backfill = RecordingBackfill()
+    result = CurrentMarketRefreshExecutor(
+        repository,
+        client_factory=lambda region: AODPClient(
+            region,
+            transport=lambda url, _timeout: _payload(*_request_identity(url)),
+            wall_clock=lambda: NOW,
+        ),
+        history_backfill=backfill,  # type: ignore[arg-type]
+    ).execute(plan)
+
+    assert len(backfill.calls) == 1
+    assert backfill.calls[0][1] == ("SELL_ITEM",)
+    assert result.history_keys_requested == 1
+    assert result.historical_estimates_available == 1
+    assert result.history_keys_unresolved == 0
 
 
 def test_sparse_refresh_rejects_batch_that_widens_the_requested_keys(tmp_path) -> None:

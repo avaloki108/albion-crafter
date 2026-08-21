@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 
@@ -27,6 +27,10 @@ from .aodp import (
     Clock,
     RecordFailure,
     plan_price_requests,
+)
+from .backfill import (
+    MissingSellHistoryBackfillService,
+    MissingSellHistoryProgress,
 )
 from .models import MarketPrice, Region
 
@@ -159,7 +163,9 @@ class RoyalMarketSyncProgress:
     missing_sides: int
     request_attempts: int
     retry_count: int
-    current_batch: BatchProgress
+    current_batch: BatchProgress | None
+    phase: str = "current"
+    history_progress: MissingSellHistoryProgress | None = None
 
 
 RoyalMarketSyncProgressCallback = Callable[[RoyalMarketSyncProgress], None]
@@ -198,6 +204,14 @@ class RoyalMarketSyncResult:
     newest_observation: datetime | None
     per_city_rows: tuple[tuple[str, int], ...]
     max_url_bytes: int
+    history_sell_keys_requested: int = 0
+    historical_sell_estimates_available: int = 0
+    unresolved_sell_sides_after_history: int = 0
+    history_planned_batches: int = 0
+    history_completed_batches: int = 0
+    history_successful_batches: int = 0
+    history_failed_batches: int = 0
+    history_record_failures: int = 0
 
     @property
     def item_count(self) -> int:
@@ -215,8 +229,17 @@ class RoyalMarketSyncResult:
     def status(self) -> str:
         if self.cancelled:
             return "cancelled"
-        if self.failures or self.record_failures:
-            return "partial" if self.successful_batches else "failed"
+        if (
+            self.failures
+            or self.record_failures
+            or self.history_failed_batches
+            or self.history_record_failures
+        ):
+            return (
+                "partial"
+                if self.successful_batches or self.history_successful_batches
+                else "failed"
+            )
         return "complete"
 
 
@@ -231,6 +254,7 @@ class RoyalMarketSyncService:
         client_factory: Callable[..., AODPClient] = AODPClient,
         batch_size: int = DEFAULT_PRICE_BATCH_SIZE,
         max_url_length: int = SAFE_AODP_URL_LENGTH,
+        history_backfill: MissingSellHistoryBackfillService | None = None,
         clock: Clock = monotonic,
         wall_clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -239,6 +263,7 @@ class RoyalMarketSyncService:
         self.client_factory = client_factory
         self.batch_size = batch_size
         self.max_url_length = max_url_length
+        self.history_backfill = history_backfill
         self._clock = clock
         self._wall_clock = wall_clock or (lambda: datetime.now(UTC))
 
@@ -331,7 +356,7 @@ class RoyalMarketSyncService:
             on_batch_success=persist_batch,
         )
         completed_at = self._aware_now()
-        return self._build_result(
+        current_sync = self._build_result(
             market_universe,
             region,
             city_values,
@@ -341,6 +366,54 @@ class RoyalMarketSyncService:
             completed_at,
             max(self._clock() - started_clock, 0.0),
             sides_updated,
+        )
+        if result.cancelled or self.history_backfill is None:
+            return current_sync
+
+        def report_history(progress: MissingSellHistoryProgress) -> None:
+            if on_progress is None:
+                return
+            on_progress(
+                RoyalMarketSyncProgress(
+                    planned_batches=request_plan.batch_count,
+                    completed_batches=result.completed_batches,
+                    successful_batches=successful_batches,
+                    failed_batches=failed_batches,
+                    rows_received=rows_received,
+                    useful_sides_received=useful_sides,
+                    sides_updated=sides_updated,
+                    missing_sides=current_sync.missing_sides,
+                    request_attempts=request_attempts,
+                    retry_count=retry_count,
+                    current_batch=None,
+                    phase="history",
+                    history_progress=progress,
+                )
+            )
+
+        history_result = self.history_backfill.refresh_missing(
+            region,
+            market_universe.item_ids,
+            city_values,
+            quality=1,
+            as_of=self._aware_now(),
+            is_cancelled=is_cancelled,
+            on_progress=report_history,
+        )
+        completed_at = self._aware_now()
+        return replace(
+            current_sync,
+            completed_at=completed_at,
+            elapsed_seconds=max(self._clock() - started_clock, 0.0),
+            cancelled=history_result.cancelled,
+            history_sell_keys_requested=history_result.requested_count,
+            historical_sell_estimates_available=history_result.resolved_count,
+            unresolved_sell_sides_after_history=history_result.unresolved_count,
+            history_planned_batches=history_result.batches_planned,
+            history_completed_batches=history_result.batches_completed,
+            history_successful_batches=history_result.batches_succeeded,
+            history_failed_batches=history_result.batches_failed,
+            history_record_failures=history_result.record_failures,
         )
 
     @staticmethod
@@ -528,6 +601,12 @@ class StoredMarketSyncResult:
     elapsed_seconds: float
     cancelled: bool
     status: str
+    history_sell_keys_requested: int = 0
+    historical_sell_estimates_available: int = 0
+    unresolved_sell_sides_after_history: int = 0
+    history_planned_batches: int = 0
+    history_successful_batches: int = 0
+    history_failed_batches: int = 0
 
 
 class MarketSyncStateRepository:
@@ -599,6 +678,12 @@ class MarketSyncStateRepository:
             "elapsed_seconds": result.elapsed_seconds,
             "cancelled": result.cancelled,
             "status": result.status,
+            "history_sell_keys_requested": result.history_sell_keys_requested,
+            "historical_sell_estimates_available": (result.historical_sell_estimates_available),
+            "unresolved_sell_sides_after_history": (result.unresolved_sell_sides_after_history),
+            "history_planned_batches": result.history_planned_batches,
+            "history_successful_batches": result.history_successful_batches,
+            "history_failed_batches": result.history_failed_batches,
         }
 
     def _stored_result(self, key: str) -> StoredMarketSyncResult | None:
@@ -637,6 +722,16 @@ class MarketSyncStateRepository:
                 elapsed_seconds=float(raw.get("elapsed_seconds", 0.0)),
                 cancelled=bool(raw["cancelled"]),
                 status=str(raw["status"]),
+                history_sell_keys_requested=int(raw.get("history_sell_keys_requested", 0)),
+                historical_sell_estimates_available=int(
+                    raw.get("historical_sell_estimates_available", 0)
+                ),
+                unresolved_sell_sides_after_history=int(
+                    raw.get("unresolved_sell_sides_after_history", 0)
+                ),
+                history_planned_batches=int(raw.get("history_planned_batches", 0)),
+                history_successful_batches=int(raw.get("history_successful_batches", 0)),
+                history_failed_batches=int(raw.get("history_failed_batches", 0)),
             )
         except (KeyError, TypeError, ValueError):
             return None

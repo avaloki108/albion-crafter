@@ -36,8 +36,14 @@ All selected cities are requested together when the URL bound permits it. There 
 fan-out and no request per item or city/item pair. HTTP 429 and transient failures use a bounded
 retry policy; permanent failures are reported. AODP publishes limits of 180 requests per minute
 and 300 per five minutes; the precomputed default full-sync request count stays comfortably below
-both, so no artificial delay is added. Successful batches are merged and committed before the
-next batch. Cancellation stops before another request and keeps completed work.
+both for the current-order pass. Successful batches are merged and committed before the next
+batch. Cancellation stops before another request and keeps completed work.
+
+After the current pass, the sync groups only missing current SELL keys by city and requests daily
+AODP history in the same bounded sequential batches. History remains in its own cache; the raw
+current table is never filled with an estimate. The result reports how many missing SELL keys
+produced a labeled historical estimate and how many had no usable retained history. Missing BUY
+orders remain missing because AODP history is SELL activity.
 
 ## Timestamp-honest cache semantics
 
@@ -53,10 +59,10 @@ mean missing—not a zero-silver order. A missing or older incoming side cannot 
 cached side. Manual observations remain in the separate `USER_OVERRIDE` store with their actual
 entry time and are never overwritten by AODP synchronization.
 
-The full sync saves valid observations regardless of age. Freshness policy belongs to consumers:
-Fast accepts up to 24 hours, Careful uses 4 hours, and Strict uses 2 hours. The coverage dashboard
-reports rows and price sides under explicit 2-hour, 4-hour, 24-hour, and older windows, including
-missing sides and rows with no usable order.
+The full sync saves valid observations regardless of age. Nonzero current market observations stay
+usable; age is an advisory shown to the player rather than a calculation gate. The coverage
+dashboard still reports explicit 2-hour, 4-hour, 24-hour, and older windows for transparency,
+including missing sides and rows with no usable current order.
 
 ## How workflows use the cache
 
@@ -68,9 +74,10 @@ missing sides and rows with no usable order.
    outside the selected freshness window.
 
 The Production Calculator remains targeted to one selected recipe. Craft Scanner consumes the
-same cache and links to Royal Market Sync when zero actionable results are dominated by missing or
-stale data. A broad sync is an accelerator, not an actionability guarantee: AODP may have missing
-or old observations, and top-of-book price is not live order-book depth or available quantity.
+same current and history caches and links to Royal Market Sync when zero actionable results are
+dominated by genuinely missing data. A broad sync is an accelerator, not an actionability
+guarantee: AODP may have no current order or retained SELL history, and top-of-book price is not
+live order-book depth or available quantity.
 
 ## Persisted metadata and future scope
 

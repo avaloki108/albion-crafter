@@ -19,15 +19,17 @@ intact. Focus is unavailable until a usable saved profile exists, but non-Focus 
 
 If a required station fee is missing/stale, Simple Mode stops before market HTTP and asks inline
 for the exact displayed Albion fee. If sparse AODP refresh still leaves a required side
-missing/stale/invalid, it offers an exact-side, exact-city user override inline. Both are persisted
-with user provenance and timestamp, then the full preflight is rebuilt before planning continues.
+missing or invalid, it offers an exact-side, exact-city user override inline. Stale nonzero market
+orders remain usable with a visible advisory. Both manual inputs are persisted with user
+provenance and timestamp, then the full preflight is rebuilt before planning continues.
 
 The broad cache and sparse planner refresh are complementary. **Market Data → REFRESH ROYAL
 MARKETS** can populate supported outputs and their recipe inputs across the Royal cities before a
 blank discovery search. Find Me Money still computes and requests only its exact remaining
-missing/stale keys, so Simple Mode works without a prior full sync and never starts one
-automatically. If more than 10 required sides remain unresolved, Simple Mode recommends the broad
-sync or Fast preset before showing the optional large manual-entry form.
+missing/stale current keys, then automatically batches daily history only for required SELL keys
+whose current observation remains missing. Simple Mode therefore works without a prior full sync
+and never starts a broad sync automatically. If more than 10 required sides remain unresolved,
+Simple Mode recommends the broad sync before showing the optional large manual-entry form.
 
 The three trust presets are transparent bundles of existing V0.6 controls:
 

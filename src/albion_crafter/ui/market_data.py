@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from threading import Event
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QVBoxLayout,
@@ -44,12 +45,19 @@ from albion_crafter.market.aodp import (
     BatchProgress,
     plan_price_requests,
 )
+from albion_crafter.market.backfill import (
+    MissingSellHistoryBackfillResult,
+    MissingSellHistoryBackfillService,
+    MissingSellHistoryProgress,
+)
 from albion_crafter.market.cache import CachedMarketService
 from albion_crafter.market.coverage import MarketCoverageService, MarketCoverageSummary
+from albion_crafter.market.estimation import DEFAULT_HISTORICAL_ESTIMATION_POLICY
 from albion_crafter.market.history import (
     AODPHistoryClient,
     HistoryFetchResult,
     HistoryTimeScale,
+    MarketHistoryInterval,
 )
 from albion_crafter.market.models import (
     Freshness,
@@ -59,6 +67,7 @@ from albion_crafter.market.models import (
     Region,
     UserPriceOverride,
 )
+from albion_crafter.market.pricing import resolve_price
 from albion_crafter.market.sync import (
     DEFAULT_ROYAL_SYNC_CITIES,
     OPTIONAL_ROYAL_SYNC_CITIES,
@@ -95,10 +104,17 @@ class HistoryRefreshSummary:
     pruned_intervals: int
 
 
+@dataclass(frozen=True, slots=True)
+class SelfHealingMarketRefreshResult:
+    current: BatchFetchResult
+    history: MissingSellHistoryBackfillResult
+
+
 class MarketWorkerSignals(QObject):
     finished = Signal(int, int, int)
     detailed = Signal(object)
     progress = Signal(object)
+    history_progress = Signal(object)
     error = Signal(str)
 
 
@@ -110,12 +126,14 @@ class MarketRefreshWorker(QRunnable):
         item_ids: tuple[str, ...],
         *,
         client_factory: Callable[..., AODPClient] = AODPClient,
+        history_backfill: MissingSellHistoryBackfillService | None = None,
     ) -> None:
         super().__init__()
         self.region = region
         self.repository = repository
         self.item_ids = item_ids
         self.client_factory = client_factory
+        self.history_backfill = history_backfill
         self.signals = MarketWorkerSignals()
         self._cancelled = Event()
 
@@ -142,13 +160,29 @@ class MarketRefreshWorker(QRunnable):
                 is_cancelled=self._cancelled.is_set,
                 on_progress=self.signals.progress.emit,
             )
+            history_result = (
+                self.history_backfill.refresh_missing(
+                    self.region,
+                    self.item_ids,
+                    CITIES,
+                    quality=1,
+                    is_cancelled=self._cancelled.is_set,
+                    on_progress=self.signals.history_progress.emit,
+                )
+                if self.history_backfill is not None and not result.cancelled
+                else None
+            )
         except Exception as exc:  # worker boundary: errors must become visible status
             self.signals.error.emit(str(exc))
         else:
             self.signals.finished.emit(
                 len(result.records), len(result.failures), result.batch_count
             )
-            self.signals.detailed.emit(result)
+            self.signals.detailed.emit(
+                SelfHealingMarketRefreshResult(result, history_result)
+                if history_result is not None
+                else result
+            )
 
 
 class RoyalMarketSyncSignals(QObject):
@@ -359,7 +393,10 @@ class MarketDataView(QWidget):
         "Item ID",
         "City",
         "Quality",
-        "Sell Min",
+        "Resolved Sell",
+        "Sell Source",
+        "Confidence",
+        "Current Sell Min",
         "Sell Observation (UTC)",
         "Sell Age",
         "Buy Max",
@@ -368,7 +405,22 @@ class MarketDataView(QWidget):
         "Fetched (UTC)",
         "Provenance",
     )
-    COLUMN_WIDTHS = (240, 120, 70, 100, 190, 95, 100, 190, 95, 190, 120)
+    COLUMN_WIDTHS = (
+        240,
+        120,
+        70,
+        110,
+        170,
+        100,
+        110,
+        190,
+        95,
+        100,
+        190,
+        95,
+        190,
+        120,
+    )
 
     def __init__(
         self,
@@ -384,15 +436,33 @@ class MarketDataView(QWidget):
         self.catalog = catalog
         self.settings = settings
         self.history = history
+        self.history_backfill = (
+            MissingSellHistoryBackfillService(repository, history) if history is not None else None
+        )
         self.universe_service = RoyalMarketUniverseService(catalog)
-        self.sync_service = RoyalMarketSyncService(self.universe_service, repository)
+        self.sync_service = RoyalMarketSyncService(
+            self.universe_service,
+            repository,
+            history_backfill=self.history_backfill,
+        )
         self.coverage_service = MarketCoverageService(repository)
         self.sync_state = MarketSyncStateRepository(settings)
         self.thread_pool = QThreadPool.globalInstance()
         self._workers: set[QRunnable] = set()
         self._closing = False
         self._catalog_universe_before_update: int | None = None
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("marketDataScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("marketDataScrollContent")
+        root = QVBoxLayout(self.scroll_content)
+        self.scroll_area.setWidget(self.scroll_content)
+        outer.addWidget(self.scroll_area)
         title = QLabel("Market Data")
         title.setObjectName("pageTitle")
         root.addWidget(title)
@@ -482,10 +552,12 @@ class MarketDataView(QWidget):
         actions.addWidget(self.static_button)
         root.addLayout(actions)
         market_note = QLabel(
-            "Full and targeted current-price refreshes check AODP without re-dating observations. "
-            "A row can remain Missing after a successful check when AODP has no reported player "
-            "order. Static Item Value, station usage fees, and your Focus profile are separate "
-            "inputs and cannot be supplied by the marketplace API."
+            "Every full or targeted refresh checks AODP current orders first, then automatically "
+            "batches daily SELL history only for item/city rows that still have no current SELL "
+            "order. The Resolved Sell column uses the latest available current order or a clearly "
+            "labeled historical estimate; raw current observations remain separate. BUY prices "
+            "cannot be derived from SELL history. Static Item Value, station usage fees, and your "
+            "Focus profile are separate inputs and cannot be supplied by the marketplace API."
         )
         market_note.setWordWrap(True)
         market_note.setObjectName("muted")
@@ -547,6 +619,7 @@ class MarketDataView(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
+        self.table.setMinimumHeight(360)
         # Keeping a large, sortable QTableWidget in ResizeToContents mode makes Qt
         # recalculate every column width while it restores sorting after a refresh.
         # With a few thousand cached rows that blocks the GUI thread for minutes.
@@ -587,6 +660,7 @@ class MarketDataView(QWidget):
             ("Item", "City", "Quality", "Side", "Price", "Entered (UTC)", "Provenance")
         )
         self.override_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.override_table.setMinimumHeight(180)
         override_layout.addRow(self.override_table)
         root.addWidget(override_group)
         self.reload()
@@ -673,6 +747,23 @@ class MarketDataView(QWidget):
     ) -> None:
         if self._closing or worker not in self._workers:
             return
+        if progress.phase == "history" and progress.history_progress is not None:
+            history = progress.history_progress
+            self.sync_progress.setRange(0, history.batch_count)
+            self.sync_progress.setValue(history.batch_number)
+            self.sync_progress.setFormat(
+                f"History {history.city_number}/{history.city_count} · "
+                f"batch {history.batch_number}/{history.batch_count}"
+            )
+            outcome = "saved" if history.successful else "failed"
+            self.status.setText(
+                "Royal Market Sync — current-order pass complete; automatically backfilling "
+                f"missing SELL observations from daily history. {history.city} "
+                f"({history.city_number}/{history.city_count}), batch "
+                f"{history.batch_number}/{history.batch_count} {outcome}; "
+                f"{history.records_returned:,} history intervals returned."
+            )
+            return
         self.sync_progress.setRange(0, progress.planned_batches)
         self.sync_progress.setValue(progress.completed_batches)
         self.sync_progress.setFormat(
@@ -703,7 +794,11 @@ class MarketDataView(QWidget):
         self.sync_progress.setFormat(
             "Cancelled — completed data kept"
             if result.cancelled
-            else f"{result.successful_batches:,} successful / {result.planned_batches:,} planned"
+            else (
+                f"Current {result.successful_batches:,}/{result.planned_batches:,} · "
+                f"history {result.history_successful_batches:,}/"
+                f"{result.history_planned_batches:,}"
+            )
         )
         self.status.setText(self._royal_sync_status(result))
         self.reload(update_status=False)
@@ -720,10 +815,17 @@ class MarketDataView(QWidget):
         return (
             f"Royal Market Sync {state}: {result.item_count:,} supported items × "
             f"{result.city_count} cities; {result.successful_batches:,}/"
-            f"{result.planned_batches:,} batches successful, {result.failed_batches:,} failed; "
+            f"{result.planned_batches:,} current batches successful, "
+            f"{result.failed_batches:,} failed; "
             f"{result.rows_returned:,} rows returned; {result.useful_sides_received:,} useful "
             f"sides received, {result.sides_updated:,} materially updated, and "
-            f"{result.missing_sides:,} missing sides; "
+            f"{result.missing_sides:,} unreported current sides. Automatic SELL-history "
+            f"fallback checked {result.history_sell_keys_requested:,} missing current SELL keys "
+            f"in {result.history_successful_batches:,}/{result.history_planned_batches:,} "
+            f"successful history batches and produced "
+            f"{result.historical_sell_estimates_available:,} labeled estimate(s); "
+            f"{result.unresolved_sell_sides_after_history:,} SELL keys had no usable retained "
+            "history. "
             f"{result.observations_le_2h:,} observations ≤2h, "
             f"{result.observations_le_4h:,} ≤4h, {result.observations_le_24h:,} ≤24h, "
             f"{result.observations_older_24h:,} >24h; "
@@ -767,10 +869,18 @@ class MarketDataView(QWidget):
             "Requests run sequentially in bounded background batches; every successful batch "
             "is saved immediately…"
         )
-        worker = MarketRefreshWorker(region, self.repository, item_ids)
+        worker = MarketRefreshWorker(
+            region,
+            self.repository,
+            item_ids,
+            history_backfill=self.history_backfill,
+        )
         self._workers.add(worker)
         worker.signals.progress.connect(
             lambda progress, w=worker: self._refresh_progress(w, progress)
+        )
+        worker.signals.history_progress.connect(
+            lambda progress, w=worker: self._history_backfill_progress(w, progress)
         )
         worker.signals.detailed.connect(
             lambda result, w=worker: self._refresh_detailed_finished(w, result)
@@ -793,10 +903,26 @@ class MarketDataView(QWidget):
             "Successful batches are already persisted. The app remains usable while this runs."
         )
 
+    def _history_backfill_progress(
+        self,
+        worker: QRunnable,
+        progress: MissingSellHistoryProgress,
+    ) -> None:
+        if self._closing or worker not in self._workers:
+            return
+        outcome = "saved" if progress.successful else "failed"
+        self.status.setText(
+            "Automatic SELL-history fallback: "
+            f"{progress.city} ({progress.city_number}/{progress.city_count}), batch "
+            f"{progress.batch_number}/{progress.batch_count} {outcome}; "
+            f"{progress.records_returned:,} daily observations returned. Only items without a "
+            "current SELL order are queried, and estimates stay separate from current prices."
+        )
+
     def _refresh_detailed_finished(
         self,
         worker: QRunnable,
-        result: BatchFetchResult,
+        result: BatchFetchResult | SelfHealingMarketRefreshResult,
     ) -> None:
         self._workers.discard(worker)
         if self._closing:
@@ -808,12 +934,14 @@ class MarketDataView(QWidget):
 
     @staticmethod
     def _current_refresh_status(
-        result: BatchFetchResult,
+        result: BatchFetchResult | SelfHealingMarketRefreshResult,
     ) -> str:
-        sell_prices = sum(record.sell_price is not None for record in result.records)
-        buy_prices = sum(record.buy_price is not None for record in result.records)
+        history = result.history if isinstance(result, SelfHealingMarketRefreshResult) else None
+        current = result.current if isinstance(result, SelfHealingMarketRefreshResult) else result
+        sell_prices = sum(record.sell_price is not None for record in current.records)
+        buy_prices = sum(record.buy_price is not None for record in current.records)
         empty_rows = sum(
-            record.sell_price is None and record.buy_price is None for record in result.records
+            record.sell_price is None and record.buy_price is None for record in current.records
         )
         empty_note = (
             f" {empty_rows} returned item/city rows had no reported sell or buy order; "
@@ -822,17 +950,33 @@ class MarketDataView(QWidget):
             else ""
         )
         cancelled_note = (
-            " Refresh was cancelled after the saved batches." if result.cancelled else ""
+            " Refresh was cancelled after the saved batches."
+            if current.cancelled or (history is not None and history.cancelled)
+            else ""
+        )
+        history_note = (
+            " Automatic SELL-history fallback was not available because this view has no "
+            "history cache."
+            if history is None
+            else (
+                f" Automatic fallback checked {history.requested_count:,} missing current SELL "
+                f"keys and produced {history.resolved_count:,} labeled historical estimate(s); "
+                f"{history.unresolved_count:,} still have no reported SELL activity in the "
+                f"retained history window. History batches: {history.batches_succeeded:,}/"
+                f"{history.batches_planned:,} successful with {history.record_failures:,} "
+                "malformed rows skipped."
+            )
         )
         return (
-            f"AODP current-price check: {result.items_requested:,} item IDs; "
-            f"{result.http_batches} HTTP batches "
-            f"({result.successful_batches} successful, {result.failed_batches} failed); "
+            f"AODP current-price check: {current.items_requested:,} item IDs; "
+            f"{current.http_batches} HTTP batches "
+            f"({current.successful_batches} successful, {current.failed_batches} failed); "
             f"{sell_prices:,} sell-order prices and {buy_prices:,} buy-order prices returned "
-            f"across {result.records_returned:,} item/city rows; "
-            f"{len(result.record_failures)} malformed rows skipped; "
-            f"{result.elapsed_seconds:.2f}s.{empty_note}{cancelled_note} Fetched (UTC) means AODP "
-            "was checked; Sell/Buy Observation is the timestamp of an actual reported order."
+            f"across {current.records_returned:,} item/city rows; "
+            f"{len(current.record_failures)} malformed rows skipped; "
+            f"{current.elapsed_seconds:.2f}s.{empty_note}{history_note}{cancelled_note} Fetched "
+            "(UTC) means AODP was checked; Sell/Buy Observation is the timestamp of an actual "
+            "reported order."
         )
 
     def _refresh_failed(
@@ -1101,18 +1245,43 @@ class MarketDataView(QWidget):
         )
         total_records = self.repository.count(region)
         records = self.repository.list_for_display(region, limit=MAX_MARKET_TABLE_ROWS)
+        as_of = datetime.now(UTC)
+        history_index = self._history_index(records, region, as_of)
         sorting_enabled = self.table.isSortingEnabled()
         self.table.setUpdatesEnabled(False)
         try:
             self.table.setSortingEnabled(False)
             self.table.setRowCount(len(records))
             for row, record in enumerate(records):
-                sell_state = policy.classify(record.sell_price_timestamp)
-                buy_state = policy.classify(record.buy_price_timestamp)
+                sell_state = policy.classify(record.sell_price_timestamp, now=as_of)
+                buy_state = policy.classify(record.buy_price_timestamp, now=as_of)
+                resolved_sell = resolve_price(
+                    item_id=record.item_id,
+                    city=record.city,
+                    quality=record.quality,
+                    side=MarketSide.SELL_ORDER,
+                    role="market_data",
+                    freshness_policy=policy,
+                    as_of=as_of,
+                    market_price=record,
+                    history=history_index.get(
+                        (record.item_id.casefold(), _normalized_city(record.city), record.quality),
+                        (),
+                    ),
+                )
+                resolved_text = money(resolved_sell.price)
+                if resolved_sell.is_historical_estimate and resolved_sell.price is not None:
+                    resolved_text = f"≈ {resolved_text}"
                 values = (
                     SortableItem(record.item_id, record.item_id),
                     SortableItem(record.city, record.city),
                     SortableItem(str(record.quality), record.quality),
+                    SortableItem(resolved_text, resolved_sell.price),
+                    SortableItem(resolved_sell.source.value, resolved_sell.source.value),
+                    SortableItem(
+                        resolved_sell.confidence.value,
+                        resolved_sell.confidence.value,
+                    ),
                     SortableItem(money(record.sell_price), record.sell_price),
                     self._timestamp_item(record.sell_price_timestamp),
                     SortableItem(
@@ -1131,14 +1300,20 @@ class MarketDataView(QWidget):
                 for column, item in enumerate(values):
                     state = (
                         sell_state
-                        if column in (3, 4, 5)
+                        if column in (3, 4, 5, 6, 7, 8)
                         else buy_state
-                        if column in (6, 7, 8)
+                        if column in (9, 10, 11)
                         else None
                     )
-                    if state in {Freshness.STALE, Freshness.FUTURE}:
+                    if resolved_sell.is_historical_estimate and column in (3, 4, 5):
+                        item.setForeground(QColor("#ffb454"))
+                    elif state is Freshness.FUTURE:
                         item.setForeground(QColor("#ff6b6b"))
-                    elif state in (Freshness.AGING, Freshness.UNKNOWN):
+                    elif state in {
+                        Freshness.AGING,
+                        Freshness.STALE,
+                        Freshness.UNKNOWN,
+                    }:
                         item.setForeground(QColor("#ffb454"))
                     self.table.setItem(row, column, item)
             self.table.setSortingEnabled(sorting_enabled)
@@ -1168,6 +1343,36 @@ class MarketDataView(QWidget):
                 f"{len(overrides)} separate user overrides for {region.display_name}; "
                 f"{self._catalog_health_text()}; {self._history_health_text(region)}."
             )
+
+    def _history_index(
+        self,
+        records: Sequence[MarketPrice],
+        region: Region,
+        as_of: datetime,
+    ) -> dict[tuple[str, str, int], tuple[MarketHistoryInterval, ...]]:
+        if self.history is None or not records:
+            return {}
+        grouped: dict[tuple[str, str, int], list[MarketHistoryInterval]] = {}
+        qualities = sorted({record.quality for record in records})
+        item_ids = tuple(dict.fromkeys(record.item_id for record in records))
+        cities = tuple(dict.fromkeys(record.city for record in records))
+        for quality in qualities:
+            intervals = self.history.list_for_items(
+                region,
+                item_ids,
+                cities,
+                quality,
+                as_of - DEFAULT_HISTORICAL_ESTIMATION_POLICY.volume_lookback,
+                time_scale=HistoryTimeScale.DAILY,
+            )
+            for interval in intervals:
+                key = (
+                    interval.item_id.casefold(),
+                    _normalized_city(interval.city),
+                    interval.quality,
+                )
+                grouped.setdefault(key, []).append(interval)
+        return {key: tuple(values) for key, values in grouped.items()}
 
     def _refresh_sync_dashboard(self) -> None:
         region = self._region()
@@ -1199,8 +1404,12 @@ class MarketDataView(QWidget):
                 f"{last_attempt.status} at {last_attempt.completed_at.isoformat()} · "
                 f"{last_attempt.item_count:,} items · {len(last_attempt.cities)} cities · "
                 f"{last_attempt.successful_batches:,}/"
-                f"{last_attempt.planned_batches:,} batches · "
-                f"{last_attempt.sides_updated:,} sides updated."
+                f"{last_attempt.planned_batches:,} current batches · "
+                f"{last_attempt.history_successful_batches:,}/"
+                f"{last_attempt.history_planned_batches:,} automatic history batches · "
+                f"{last_attempt.sides_updated:,} current sides updated · "
+                f"{last_attempt.historical_sell_estimates_available:,} historical SELL "
+                "estimates available."
             )
         if not cities or not universe.item_ids:
             self.coverage_summary.setText(
@@ -1224,6 +1433,7 @@ class MarketDataView(QWidget):
             for city in summary.city_coverage
         )
         return (
+            "Age diagnostics only — old nonzero observations remain usable. "
             f"Items tracked: {summary.item_count:,} · Cities: {summary.city_count} · "
             f"Expected item/city rows: {summary.expected_rows:,} · "
             f"Cached rows: {summary.cached_rows:,}\n"
@@ -1320,7 +1530,7 @@ class MarketDataView(QWidget):
             else f"Showing {len(records):,} useful rows from {total:,} cached rows"
         )
         return (
-            f"{scope} / {len(records) * 2:,} displayed sides: "
+            f"{scope} / {len(records) * 2:,} displayed sides (age is advisory): "
             f"{states['fresh']} fresh, {states['aging']} aging, {states['stale']} stale, "
             f"{states['future']} future-dated (invalid), {states['missing']} missing, "
             f"{states['unknown']} unknown timestamp; "

@@ -7,6 +7,7 @@ from inspect import signature
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHeaderView
 
 from albion_crafter.core.models import Item, MaterialRequirement, Recipe
@@ -336,6 +337,71 @@ def test_market_table_uses_stable_interactive_column_widths(qt_app, tmp_path) ->
         header.sectionResizeMode(column) is QHeaderView.ResizeMode.Interactive
         for column in range(len(view.HEADERS) - 1)
     )
+
+
+def test_market_data_page_has_working_vertical_scroll(qt_app, tmp_path) -> None:
+    view = _view(tmp_path)
+    view.resize(1_050, 600)
+    view.show()
+    qt_app.processEvents()
+
+    scrollbar = view.scroll_area.verticalScrollBar()
+    assert view.scroll_area.widgetResizable()
+    assert view.scroll_area.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    assert scrollbar.maximum() > 0
+    scrollbar.setValue(scrollbar.maximum())
+    qt_app.processEvents()
+    assert scrollbar.value() == scrollbar.maximum()
+
+    view.close()
+
+
+def test_market_table_fills_missing_current_sell_with_labeled_history(qt_app, tmp_path) -> None:
+    view = _view(tmp_path)
+    now = datetime.now(UTC)
+    view.repository.upsert_many(
+        (
+            MarketPrice(
+                "T5_POTION_ACID",
+                "Bridgewatch",
+                1,
+                Region.AMERICAS,
+                None,
+                None,
+                None,
+                None,
+                now,
+            ),
+        )
+    )
+    assert view.history is not None
+    view.history.upsert_many(
+        MarketHistoryInterval(
+            "T5_POTION_ACID",
+            "Bridgewatch",
+            1,
+            Region.AMERICAS,
+            now - timedelta(days=day),
+            20,
+            10_000 + day,
+            HistoryTimeScale.DAILY,
+            now,
+        )
+        for day in range(1, 8)
+    )
+
+    view.reload()
+
+    resolved_column = view.HEADERS.index("Resolved Sell")
+    source_column = view.HEADERS.index("Sell Source")
+    confidence_column = view.HEADERS.index("Confidence")
+    current_column = view.HEADERS.index("Current Sell Min")
+    assert view.table.item(0, resolved_column).text().startswith("≈ ")
+    assert view.table.item(0, source_column).text() == "HISTORICAL_ESTIMATE"
+    assert view.table.item(0, confidence_column).text() == "HIGH"
+    assert view.table.item(0, current_column).text() == "Missing"
+
+    view.close()
 
 
 def test_history_completion_does_not_rebuild_current_price_table(

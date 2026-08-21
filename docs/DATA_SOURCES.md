@@ -89,15 +89,16 @@ reports the complete selected-universe age distribution.
 
 A successful current-price request can still return an empty sell or buy side. That means AODP has
 no player-reported top-of-book observation for that exact item/city/quality; it is not zero and the
-app does not invent a current price. The selected-recipe refresh then batches only missing or stale
-required SELL keys into the daily history endpoint. Marketplace refresh also cannot provide
-upstream static Item Value, the exact station fee displayed in the Albion client, or a
-player-specific Focus profile.
+app does not invent a current price. Full Royal, targeted Market Data, and selected-recipe
+refreshes then batch only missing required SELL keys into the daily history endpoint. Marketplace
+refresh also cannot provide upstream static Item Value, the exact station fee displayed in the
+Albion client, or a player-specific Focus profile.
 
 Find Me Money preflight computes exact sparse requirements before HTTP. Arbitrage requests source
 minimum sell and either destination minimum sell (Sell Order) or maximum buy (Instant Sale).
-Repeated market keys across routes are de-duplicated. Trusted exact-side user overrides live in a
-separate table and never overwrite AODP cache.
+Repeated market keys across routes are de-duplicated. Its explicit sparse current refresh also
+backfills only missing required SELL keys with daily history before evaluation. Trusted exact-side
+user overrides live in a separate table and never overwrite AODP cache.
 
 Top-of-book price is not available quantity, guaranteed execution, or order depth.
 
@@ -117,11 +118,10 @@ trade-price extremes, or a fill guarantee.
 Calculator and Craft Scanner SELL resolution uses this fixed precedence:
 
 1. an exact trusted user override, when one exists;
-2. a reasonably fresh current minimum sell observation;
-3. a city/quality-specific estimate from recent daily AODP sell history;
-4. a preserved but explicitly stale/future/untimestamped current observation when no history can
-   replace it; or
-5. missing.
+2. any nonzero current minimum sell observation, with its real age retained;
+3. a city/quality-specific estimate from recent daily AODP sell history when current SELL is
+   absent; or
+4. missing.
 
 BUY resolution never uses history: it remains exact override, current maximum buy, or missing.
 No other city's price is substituted. Raw current rows and raw history intervals remain in their
@@ -141,6 +141,8 @@ Confidence is deterministic. `LIVE` means a usable current observation. A histor
 and activity within two days; `MEDIUM` requires at least three days, 10 items, no more than 60%
 volatility, and activity within four days. Other usable history is `LOW`; no usable source is
 `MISSING`. Historical estimates are visible advisory warnings, not current top-of-book claims.
+Stale or untimestamped nonzero current observations are also advisory rather than calculation
+blockers. A materially future-dated timestamp remains an invalid-data blocker.
 
 Coverage distinguishes populated success, empty success, partial, failed, cancelled, and never
 fetched. Empty/missing evidence does not become invented volume. Find Me Money evaluates current
@@ -154,6 +156,6 @@ evidence and UI warnings. Craft/Refine input materials do not yet receive shared
 acquisition-capacity constraints.
 
 Run `albion-crafter-inspect-market ITEM_ID --city Bridgewatch` to inspect cached raw and resolved
-evidence. Add `--refresh` to fetch current data plus history only for missing/stale SELL keys, or
+evidence. Add `--refresh` to fetch current data plus history only for missing SELL keys, or
 `--history-all` with `--refresh` when an explicit diagnostic needs history comparisons for every
 requested item.

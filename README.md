@@ -39,12 +39,14 @@ Requests are de-duplicated, sequential, capped at 100 item IDs and 3,900 encoded
 batch, retried only under the bounded AODP policy, persisted after each successful batch, and
 cancellable between requests. A coverage dashboard reports real observation ages under explicit
 2-hour, 4-hour, and 24-hour windows. Downloading an old observation now does not make its market
-timestamp new. See [Royal Market Sync](docs/MARKET_SYNC.md).
+timestamp new. After the current-order pass, the same action automatically batches daily SELL
+history only for item/city keys without a current SELL order. See
+[Royal Market Sync](docs/MARKET_SYNC.md).
 
 Zero-action results are deliberately distinct:
 
 - **Setup Required** means exact player-observed evidence must be entered.
-- **Not Enough Data to Know** means required market observations are missing, stale, or invalid.
+- **Not Enough Data to Know** means required market observations are genuinely missing or invalid.
 - **No Profit Found** means fully priced opportunities were checked but none survived the current
   bankroll and policies.
 
@@ -52,10 +54,11 @@ Zero-action results are deliberately distinct:
 
 The calculator evaluates one supported craft or refining recipe. It refreshes only that recipe's
 required current material/output keys after an explicit button press, then batches only unresolved
-or stale required SELL keys through AODP daily history. A robust, volume-aware historical estimate
-can complete the economics, but it is labeled `HISTORICAL_ESTIMATE` with confidence and volume;
-BUY prices never use sell history. Taxes, returns, cash timing, Focus mapping, timestamps,
-provenance, and actionability evidence remain available in the detail view.
+required SELL keys through AODP daily history. A robust, volume-aware historical estimate can
+complete the economics, but it is labeled `HISTORICAL_ESTIMATE` with confidence and volume;
+BUY prices never use sell history. A nonzero current order remains usable regardless of age; its
+timestamp and stale advisory remain visible. Taxes, returns, cash timing, Focus mapping,
+timestamps, provenance, and actionability evidence remain available in the detail view.
 
 ### Find Me Money
 
@@ -71,7 +74,8 @@ actions maximizes expected profit?
   keys, cached/missing/stale/future evidence, production-only station/FCE gaps, potential source
   and destination history keys, capacity-component estimates, and named optimizer bounds.
 - Current refresh is explicit, sparse, sequential, cancellation-aware, and partial-failure
-  tolerant. History is shortlisted only after current-price economics reject weak routes.
+  tolerant. Missing required SELL observations receive the same automatic daily-history fallback;
+  execution-capacity history is shortlisted only after current-price economics reject weak routes.
 - One action-agnostic optimizer may choose any mixture—or no action. It never forces
   diversification or recycles expected revenue inside the plan.
 - The table and **DO THIS** detail use immutable plan evidence and distinguish Craft, Refine, and

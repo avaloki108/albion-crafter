@@ -149,7 +149,10 @@ def resolve_price(
             **shared,
         )
 
-    if current_price is not None and current_freshness in {Freshness.FRESH, Freshness.AGING}:
+    # AODP's current endpoint represents the current order-book observation even
+    # when that order was first seen long ago. Age remains visible evidence, but
+    # it must not turn a real non-zero order into unusable/missing data.
+    if current_price is not None:
         return ResolvedPrice(
             item_id=item_id,
             city=city,
@@ -196,26 +199,6 @@ def resolve_price(
             **shared,
         )
 
-    # Preserve a nonzero stale/future/untimestamped current observation when no
-    # usable history exists. It remains explicitly non-actionable and its trust
-    # state is never hidden; recent history still wins above it for SELL.
-    if current_price is not None:
-        return ResolvedPrice(
-            item_id=item_id,
-            city=city,
-            quality=quality,
-            side=side,
-            price=current_price,
-            observation_timestamp=current_timestamp,
-            fetched_at=current_fetched_at,
-            provenance=current_provenance,
-            freshness=current_freshness,
-            role=role,
-            source=MarketPriceSource.CURRENT,
-            confidence=PriceConfidence.LIVE,
-            **shared,
-        )
-
     return ResolvedPrice(
         item_id=item_id,
         city=city,
@@ -234,7 +217,7 @@ def resolve_price(
 
 
 def price_quality_reasons(line: ResolvedPrice) -> tuple[ActionabilityReason, ...]:
-    """Return provenance/freshness blockers for a selected, present price."""
+    """Return provenance blockers and advisory timestamp diagnostics."""
     reasons: list[ActionabilityReason] = []
     if line.source is MarketPriceSource.HISTORICAL_ESTIMATE:
         reasons.append(
@@ -248,28 +231,6 @@ def price_quality_reasons(line: ResolvedPrice) -> tuple[ActionabilityReason, ...
         )
         return tuple(reasons)
     if line.price is None:
-        if line.current_price is not None and line.current_freshness is Freshness.STALE:
-            reasons.append(
-                ActionabilityReason(
-                    ReasonCode.STALE_PRICE,
-                    f"{line.item_id} {line.side.value} current price is stale and no usable "
-                    "historical sell estimate replaced it.",
-                )
-            )
-        elif line.current_price is not None and line.current_freshness is Freshness.FUTURE:
-            reasons.append(
-                ActionabilityReason(
-                    ReasonCode.FUTURE_TIMESTAMP,
-                    f"{line.item_id} {line.side.value} current price is materially future-dated.",
-                )
-            )
-        elif line.current_price is not None and line.current_freshness is Freshness.UNKNOWN:
-            reasons.append(
-                ActionabilityReason(
-                    ReasonCode.UNKNOWN_TIMESTAMP,
-                    f"{line.item_id} {line.side.value} current price has no observation timestamp.",
-                )
-            )
         return tuple(reasons)
     if not line.provenance.is_actionable_price_source:
         reasons.append(
@@ -282,7 +243,9 @@ def price_quality_reasons(line: ResolvedPrice) -> tuple[ActionabilityReason, ...
         reasons.append(
             ActionabilityReason(
                 ReasonCode.STALE_PRICE,
-                f"{line.item_id} {line.side.value} price is stale.",
+                f"{line.item_id} {line.side.value} uses the latest available current order; "
+                "its observation timestamp is older than the preferred age.",
+                ReasonSeverity.WARNING,
             )
         )
     elif line.freshness is Freshness.FUTURE:
@@ -296,7 +259,9 @@ def price_quality_reasons(line: ResolvedPrice) -> tuple[ActionabilityReason, ...
         reasons.append(
             ActionabilityReason(
                 ReasonCode.UNKNOWN_TIMESTAMP,
-                f"{line.item_id} {line.side.value} price has no observation timestamp.",
+                f"{line.item_id} {line.side.value} uses the latest available current order; "
+                "it has no observation timestamp.",
+                ReasonSeverity.WARNING,
             )
         )
     return tuple(reasons)

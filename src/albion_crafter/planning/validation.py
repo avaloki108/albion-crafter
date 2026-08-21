@@ -480,7 +480,9 @@ def action_evidence_hook(
                 reasons.append(
                     PlanReason(
                         PlanReasonCode.STALE_MARKET_DATA,
-                        f"Action {action.candidate_id} has missing or stale {role} evidence.",
+                        f"Action {action.candidate_id} uses the latest available {role} price; "
+                        "its observation timestamp is old or unavailable.",
+                        PlanReasonSeverity.WARNING,
                     )
                 )
         if seen_materials != material_ids:
@@ -1256,8 +1258,9 @@ def market_freshness_hook(max_age: timedelta) -> FreshnessValidationHook:
         return (
             PlanReason(
                 PlanReasonCode.STALE_MARKET_DATA,
-                f"Action {action.candidate_id} has missing or stale required market evidence at "
-                "plan completion.",
+                f"Action {action.candidate_id} uses the latest available required market "
+                "evidence at plan completion; its timestamp is old or unavailable.",
+                PlanReasonSeverity.WARNING,
             ),
         )
 

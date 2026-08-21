@@ -167,7 +167,7 @@ def test_low_volume_dragon_teasel_history_has_low_confidence() -> None:
     assert estimate.average_daily_volume_7d == pytest.approx(3 / 7)
 
 
-def test_recent_history_replaces_stale_current_but_preserves_raw_stale_evidence() -> None:
+def test_stale_current_remains_latest_available_and_age_is_advisory() -> None:
     item_id = "T5_ALCHEMY_RARE_DIREBEAR"
     stale = NOW - timedelta(days=3)
     line = _resolve(
@@ -176,12 +176,15 @@ def test_recent_history_replaces_stale_current_but_preserves_raw_stale_evidence(
         history=_history(item_id, (9_000, 9_100, 9_200, 9_050, 9_150)),
     )
 
-    assert line.source is MarketPriceSource.HISTORICAL_ESTIMATE
-    assert line.price == pytest.approx(9_100)
+    assert line.source is MarketPriceSource.CURRENT
+    assert line.price == 50_000
     assert line.current_price == 50_000
     assert line.current_timestamp == stale
     assert line.current_freshness is Freshness.STALE
     assert line.current_is_stale
+    reasons = price_quality_reasons(line)
+    assert reasons[0].code is ReasonCode.STALE_PRICE
+    assert reasons[0].severity is ReasonSeverity.WARNING
 
 
 def test_acid_recipe_resolves_three_current_and_two_history_prices(tmp_path) -> None:

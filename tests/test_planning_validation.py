@@ -116,7 +116,7 @@ def test_validation_rejects_shared_capacity_double_spend() -> None:
     }
 
 
-def test_final_market_freshness_downgrades_plan_to_non_actionable() -> None:
+def test_final_market_freshness_is_advisory_not_a_restriction() -> None:
     constraints, ceilings, result = _fixture(market_age=timedelta(hours=5))
     validation = validate_plan(
         result,
@@ -125,7 +125,8 @@ def test_final_market_freshness_downgrades_plan_to_non_actionable() -> None:
         as_of=NOW,
         freshness_hooks=default_freshness_hooks(constraints),
     )
-    assert validation.status is PlanStatus.NON_ACTIONABLE
+    assert validation.status is PlanStatus.ADVISORY
+    assert validation.is_feasible
     assert PlanReasonCode.STALE_MARKET_DATA in {reason.code for reason in validation.reasons}
 
 

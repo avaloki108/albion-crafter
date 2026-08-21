@@ -15,13 +15,17 @@ from albion_crafter.database.database import (
     PriceOverrideRepository,
     SettingsRepository,
 )
+from albion_crafter.database.v3 import MarketHistoryRepository
 from albion_crafter.market.aodp import (
     SAFE_AODP_URL_LENGTH,
     AODPClient,
     BatchFailure,
     plan_price_requests,
 )
+from albion_crafter.market.backfill import MissingSellHistoryBackfillService
 from albion_crafter.market.coverage import MarketCoverageService
+from albion_crafter.market.history import AODPHistoryClient
+from albion_crafter.market.history_cache import CachedOutputHistoryService
 from albion_crafter.market.models import MarketPrice, MarketSide, Region, UserPriceOverride
 from albion_crafter.market.sync import (
     DEFAULT_ROYAL_SYNC_CITIES,
@@ -252,6 +256,108 @@ def test_full_sync_persists_every_successful_batch_and_deterministic_statistics(
     assert persisted.sell_price_timestamp == NOW - timedelta(minutes=30)
     assert persisted.fetched_at == NOW
     assert [value.completed_batches for value in progress] == [1, 2]
+
+
+def test_full_sync_automatically_backfills_only_missing_current_sell_history(tmp_path) -> None:
+    database = _database(tmp_path, "self-healing-sync.db")
+    catalog = CatalogRepository(database)
+    _catalog(catalog)
+    prices = MarketPriceRepository(database, wall_clock=lambda: NOW)
+    history = MarketHistoryRepository(database)
+
+    def current_transport(url: str, _timeout: float) -> bytes:
+        item_ids, cities = _url_scope(url)
+        return json.dumps(
+            [
+                {
+                    "item_id": item_id,
+                    "city": city,
+                    "quality": 1,
+                    "sell_price_min": 0 if item_id == "T4_BAG@1" else 100,
+                    "sell_price_min_date": (
+                        "0001-01-01T00:00:00"
+                        if item_id == "T4_BAG@1"
+                        else (NOW - timedelta(minutes=30)).isoformat()
+                    ),
+                    "buy_price_max": 90,
+                    "buy_price_max_date": (NOW - timedelta(minutes=30)).isoformat(),
+                }
+                for item_id in item_ids
+                for city in cities
+            ]
+        ).encode()
+
+    history_requests: list[tuple[str, ...]] = []
+
+    def history_transport(url: str, _timeout: float) -> bytes:
+        path = urlparse(url).path.partition("/history/")[2].removesuffix(".json")
+        item_ids = tuple(unquote(value) for value in path.split(","))
+        history_requests.append(item_ids)
+        return json.dumps(
+            [
+                {
+                    "item_id": item_id,
+                    "location": "Bridgewatch",
+                    "quality": 1,
+                    "data": [
+                        {
+                            "item_count": 20,
+                            "avg_price": 5_000 + day,
+                            "timestamp": (NOW - timedelta(days=day)).isoformat(),
+                        }
+                        for day in range(1, 8)
+                    ],
+                }
+                for item_id in item_ids
+            ]
+        ).encode()
+
+    backfill = MissingSellHistoryBackfillService(
+        prices,
+        history,
+        client_factory=lambda region: AODPHistoryClient(
+            region,
+            transport=history_transport,
+            wall_clock=lambda: NOW,
+            retry_backoff_seconds=0,
+        ),
+        cache_service_factory=lambda client, repository: CachedOutputHistoryService(
+            client,
+            repository,
+            wall_clock=lambda: NOW,
+        ),
+    )
+
+    def current_factory(
+        region: Region,
+        *,
+        batch_size: int,
+        max_url_length: int,
+        max_batches: int,
+    ) -> AODPClient:
+        return AODPClient(
+            region,
+            batch_size=batch_size,
+            max_url_length=max_url_length,
+            max_batches=max_batches,
+            transport=current_transport,
+            wall_clock=lambda: NOW,
+        )
+
+    result = RoyalMarketSyncService(
+        RoyalMarketUniverseService(catalog),
+        prices,
+        client_factory=current_factory,
+        history_backfill=backfill,
+        wall_clock=lambda: NOW,
+    ).synchronize(Region.AMERICAS, ("Bridgewatch",))
+
+    assert history_requests == [("T4_BAG@1",)]
+    assert result.status == "complete"
+    assert result.history_sell_keys_requested == 1
+    assert result.historical_sell_estimates_available == 1
+    assert result.unresolved_sell_sides_after_history == 0
+    assert result.history_successful_batches == result.history_planned_batches == 1
 
 
 def test_full_sync_keeps_success_before_later_failure_and_cancellation(tmp_path) -> None:

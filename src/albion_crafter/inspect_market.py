@@ -15,6 +15,7 @@ from albion_crafter.database.database import (
 )
 from albion_crafter.database.v3 import MarketHistoryRepository
 from albion_crafter.market.aodp import AODPClient, MarketDataError
+from albion_crafter.market.backfill import MissingSellHistoryBackfillService
 from albion_crafter.market.cache import CachedMarketService
 from albion_crafter.market.estimation import (
     DEFAULT_HISTORICAL_ESTIMATION_POLICY,
@@ -22,7 +23,7 @@ from albion_crafter.market.estimation import (
 )
 from albion_crafter.market.history import AODPHistoryClient, HistoryDataError, HistoryTimeScale
 from albion_crafter.market.history_cache import CachedOutputHistoryService
-from albion_crafter.market.models import Freshness, FreshnessPolicy, MarketSide, Region
+from albion_crafter.market.models import FreshnessPolicy, MarketSide, Region
 from albion_crafter.market.pricing import ResolvedPrice, resolve_price
 
 
@@ -147,7 +148,6 @@ def refresh_market_items(
     quality: int,
     region: Region,
     as_of: datetime,
-    maximum_price_age: timedelta,
     history_all: bool,
 ) -> None:
     prices = MarketPriceRepository(database)
@@ -156,30 +156,26 @@ def refresh_market_items(
         cities=(city,),
         qualities=(quality,),
     )
-    history_ids: list[str] = []
-    policy = FreshnessPolicy(maximum_price_age)
-    for item_id in item_ids:
-        record = prices.get(item_id, city, quality, region)
-        sell = record.sell_price if record is not None and record.sell_price else None
-        timestamp = record.sell_price_timestamp if record is not None and sell is not None else None
-        usable = sell is not None and policy.classify(timestamp, now=as_of) in {
-            Freshness.FRESH,
-            Freshness.AGING,
-        }
-        if history_all or not usable:
-            history_ids.append(item_id)
-    if history_ids:
-        history_repository = MarketHistoryRepository(database)
+    history_repository = MarketHistoryRepository(database)
+    if history_all:
         CachedOutputHistoryService(
             AODPHistoryClient(region),
             history_repository,
         ).refresh_market_items(
-            history_ids,
+            item_ids,
             start_date=(as_of - DEFAULT_HISTORICAL_ESTIMATION_POLICY.volume_lookback).date(),
             end_date=as_of.date(),
             cities=(city,),
             qualities=(quality,),
             time_scale=HistoryTimeScale.DAILY,
+        )
+    else:
+        MissingSellHistoryBackfillService(prices, history_repository).refresh_missing(
+            region,
+            item_ids,
+            (city,),
+            quality=quality,
+            as_of=as_of,
         )
 
 
@@ -196,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Refresh current data and only missing/stale SELL history before inspecting.",
+        help="Refresh current data and only missing SELL history before inspecting.",
     )
     parser.add_argument(
         "--history-all",
@@ -220,7 +216,6 @@ def main(argv: list[str] | None = None) -> int:
                 quality=arguments.quality,
                 region=Region(arguments.region),
                 as_of=as_of,
-                maximum_price_age=maximum_age,
                 history_all=arguments.history_all,
             )
         result = inspect_market_items(

@@ -819,6 +819,14 @@ class CalculatorView(QWidget):
         issue_count = len(result.actionability.blocking_reasons)
         oldest = age_text(snapshot.oldest_timestamp)
         estimate_count = snapshot.historical_estimate_count
+        timestamp_advisories = {
+            ReasonCode.STALE_PRICE,
+            ReasonCode.FUTURE_TIMESTAMP,
+            ReasonCode.UNKNOWN_TIMESTAMP,
+        }
+        has_timestamp_advisory = any(
+            reason.code in timestamp_advisories for reason in result.actionability.warnings
+        )
         if result.actionability.is_actionable and estimate_count:
             self.data_banner.setText(
                 f"Estimated profitability · {snapshot.live_price_count} live price(s), "
@@ -830,9 +838,20 @@ class CalculatorView(QWidget):
                 "WHAT'S MISSING · no required value is missing; historical estimates are "
                 "clearly labeled advisory evidence"
             )
+        elif result.actionability.is_actionable and has_timestamp_advisory:
+            self.data_banner.setText(
+                "Latest available profitability · all required prices are filled. One or more "
+                f"current orders have an old or unusual timestamp; they remain usable. Oldest "
+                f"evidence: {oldest}."
+            )
+            self._set_banner_state("aging")
+            self.whats_missing.setText(
+                "WHAT'S MISSING · nothing; market age is informational and does not block the "
+                "calculation"
+            )
         elif result.actionability.is_actionable:
             self.data_banner.setText(
-                f"Ready to use · required prices and station fee meet saved freshness rules. "
+                f"Ready to use · all required prices use the latest available AODP evidence. "
                 f"Oldest required price: {oldest}."
             )
             self._set_banner_state("fresh")

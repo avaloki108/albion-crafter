@@ -15,6 +15,7 @@ from albion_crafter.core.freshness import Freshness
 from albion_crafter.core.models import Item, MaterialRequirement, Recipe
 from albion_crafter.core.provenance import Provenance
 from albion_crafter.core.stations import StationFeeObservation, StationType
+from albion_crafter.market.history import HistoryTimeScale, MarketHistoryInterval
 from albion_crafter.market.liquidity import LiquidityLevel
 from albion_crafter.market.models import MarketPrice, Region
 from albion_crafter.planning.candidates import (
@@ -218,7 +219,7 @@ def test_explicit_transport_is_cash_and_economic_cost_once() -> None:
     )
 
 
-def test_stale_price_is_retained_as_an_inspectable_near_miss() -> None:
+def test_stale_price_is_latest_available_and_does_not_reject_candidate() -> None:
     eligible, profile = _eligible()
     result = PlanCandidateEvaluator().evaluate(
         (eligible,),
@@ -237,10 +238,44 @@ def test_stale_price_is_retained_as_an_inspectable_near_miss() -> None:
         as_of=NOW,
     )
 
-    assert not result.candidates[0].economics.nonfocused_eligible
-    assert not result.candidates[0].economics.has_focused_variant
-    assert result.near_misses[0].expected_profit is not None
-    assert dict(result.rejection_counts)["stale_market_data"] >= 1
+    assert result.candidates[0].economics.nonfocused_eligible
+    assert result.candidates[0].economics.has_focused_variant
+    assert not result.near_misses
+    assert dict(result.rejection_counts).get("stale_market_data", 0) == 0
+
+
+def test_missing_current_sell_uses_cached_daily_history_in_planning() -> None:
+    eligible, profile = _eligible()
+    history = tuple(
+        MarketHistoryInterval(
+            "T4_MAIN_SWORD",
+            "Bridgewatch",
+            1,
+            Region.AMERICAS,
+            NOW - timedelta(days=day),
+            20,
+            2_500,
+            HistoryTimeScale.DAILY,
+            NOW,
+        )
+        for day in range(1, 8)
+    )
+
+    result = PlanCandidateEvaluator().evaluate(
+        (eligible,),
+        (_price("T4_METALBAR", "Bridgewatch", 100),),
+        (),
+        profile,
+        _constraints(),
+        history=history,
+        as_of=NOW,
+    )
+
+    assert result.candidates
+    prices = json.loads(dict(result.candidates[0].evidence)["prices"])
+    output = next(value for value in prices if value["role"] == "output")
+    assert output["price"] == 2_500
+    assert output["source"] == "HISTORICAL_ESTIMATE"
 
 
 def test_shortlist_selects_groups_but_keeps_competing_routes() -> None:

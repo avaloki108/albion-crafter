@@ -10,6 +10,7 @@ from albion_crafter.core.arbitrage import calculate_arbitrage_economics
 from albion_crafter.core.freshness import Freshness, FreshnessPolicy
 from albion_crafter.core.mechanics import CURRENT_RULES, MechanicsRules, VerificationStatus
 from albion_crafter.core.models import ActionKind
+from albion_crafter.market.history import MarketHistoryInterval
 from albion_crafter.market.liquidity import LiquidityAssessment, LiquidityLevel
 from albion_crafter.market.models import MarketPrice, Region, UserPriceOverride
 from albion_crafter.market.pricing import resolve_price
@@ -47,6 +48,7 @@ class ArbitrageCandidateEvaluator:
         overrides: Iterable[UserPriceOverride],
         constraints: FindMoneyConstraints,
         *,
+        history: Iterable[MarketHistoryInterval] = (),
         liquidity_by_key: Mapping[LiquidityKey, LiquidityAssessment] | None = None,
         as_of: datetime | None = None,
         progress: ProgressCallback | None = None,
@@ -68,6 +70,11 @@ class ArbitrageCandidateEvaluator:
         override_index = {
             (row.region, row.item_id, row.city, row.quality, row.side): row for row in overrides
         }
+        history_index: dict[LiquidityKey, list[MarketHistoryInterval]] = {}
+        for row in history:
+            history_index.setdefault((row.region, row.item_id, row.city, row.quality), []).append(
+                row
+            )
         policy = FreshnessPolicy(constraints.max_market_age)
         liquidity_index = liquidity_by_key or {}
         candidates: list[PlanCandidate] = []
@@ -96,6 +103,7 @@ class ArbitrageCandidateEvaluator:
                 evaluation_time,
                 market_index,
                 override_index,
+                history_index,
             )
             destination = self._resolve(
                 item.item_id,
@@ -107,6 +115,7 @@ class ArbitrageCandidateEvaluator:
                 evaluation_time,
                 market_index,
                 override_index,
+                history_index,
             )
             candidate_id = "|".join(
                 (
@@ -302,6 +311,7 @@ class ArbitrageCandidateEvaluator:
         as_of,
         market_index,
         override_index,
+        history_index,
     ):
         return resolve_price(
             item_id=item_id,
@@ -313,6 +323,7 @@ class ArbitrageCandidateEvaluator:
             as_of=as_of,
             market_price=market_index.get((constraints.region, item_id, city, 1)),
             override=override_index.get((constraints.region, item_id, city, 1, side)),
+            history=history_index.get((constraints.region, item_id, city, 1), ()),
         )
 
     @staticmethod
@@ -324,6 +335,15 @@ class ArbitrageCandidateEvaluator:
         reasons: list[PlanReason] = []
         if line.price is None or line.price <= 0:
             reasons.append(PlanReason(code, f"Arbitrage {label} price is missing or nonpositive."))
+        if line.is_historical_estimate:
+            reasons.append(
+                PlanReason(
+                    PlanReasonCode.OTHER,
+                    f"Arbitrage {label} uses a {line.confidence.value} confidence AODP "
+                    f"historical SELL estimate from {line.historical_days_used} day(s).",
+                    PlanReasonSeverity.WARNING,
+                )
+            )
         if line.price is not None and not line.provenance.is_actionable_price_source:
             reasons.append(
                 PlanReason(
@@ -342,7 +362,9 @@ class ArbitrageCandidateEvaluator:
             reasons.append(
                 PlanReason(
                     PlanReasonCode.STALE_MARKET_DATA,
-                    f"Arbitrage {label} price is stale or has unknown age.",
+                    f"Arbitrage {label} uses the latest available price; its timestamp is old "
+                    "or unavailable.",
+                    PlanReasonSeverity.WARNING,
                 )
             )
         return tuple(reasons)
@@ -405,6 +427,18 @@ def _evidence(
             "provenance": line.provenance.value,
             "freshness": line.freshness.value,
             "role": line.role,
+            "source": line.source.value,
+            "confidence": line.confidence.value,
+            "current_price": line.current_price,
+            "current_observed_at": (
+                line.current_timestamp.astimezone(UTC).isoformat()
+                if line.current_timestamp is not None
+                else None
+            ),
+            "historical_reference_price": line.historical_reference_price,
+            "historical_days_used": line.historical_days_used,
+            "historical_total_volume": line.historical_total_volume,
+            "historical_avg_daily_volume_7d": line.historical_avg_daily_volume_7d,
         }
         for line in (source, destination)
     ]

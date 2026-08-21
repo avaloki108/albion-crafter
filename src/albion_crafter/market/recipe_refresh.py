@@ -27,7 +27,7 @@ from .estimation import (
 )
 from .history import AODPHistoryClient, HistoryTimeScale
 from .history_cache import CachedHistoryRefreshResult, CachedOutputHistoryService
-from .models import Freshness, FreshnessPolicy, MarketPrice, MarketSide, Region
+from .models import FreshnessPolicy, MarketPrice, MarketSide, Region
 from .pricing import resolve_price
 
 ClientFactory = Callable[[Region], AODPClient]
@@ -535,12 +535,7 @@ class RecipePriceRefreshService:
                 requirement
                 for requirement in plan.requirements
                 if requirement.side is MarketSide.SELL_ORDER
-                and not _usable_current(
-                    after.get(requirement.network_key),
-                    requirement.side,
-                    FreshnessPolicy(request.maximum_price_age),
-                    resolution_time,
-                )
+                and not _current_available(after.get(requirement.network_key), requirement.side)
             )
             for group in _groups(history_requirements):
                 if is_cancelled is not None and is_cancelled():
@@ -761,17 +756,12 @@ def _availability(
     )
 
 
-def _usable_current(
+def _current_available(
     record: MarketPrice | None,
     side: MarketSide,
-    policy: FreshnessPolicy,
-    as_of: datetime,
 ) -> bool:
-    price, observed_at = _selected_side(record, side)
-    return price is not None and policy.classify(observed_at, now=as_of) in {
-        Freshness.FRESH,
-        Freshness.AGING,
-    }
+    price, _observed_at = _selected_side(record, side)
+    return price is not None
 
 
 def _selected_side(

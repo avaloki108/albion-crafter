@@ -31,6 +31,7 @@ from albion_crafter.database.v4 import (
     FindMoneyPreferencesRepository,
     PlanSnapshotRepository,
 )
+from albion_crafter.market.backfill import MissingSellHistoryBackfillService
 from albion_crafter.market.history import AODPHistoryClient
 from albion_crafter.market.history_cache import CachedOutputHistoryService
 from albion_crafter.market.models import Region
@@ -76,7 +77,13 @@ def create_find_money_service(
         crafting_profile_repository,
         history_repository,
         snapshots=snapshot_repository,
-        current_refresh=CurrentMarketRefreshExecutor(market_repository),
+        current_refresh=CurrentMarketRefreshExecutor(
+            market_repository,
+            history_backfill=MissingSellHistoryBackfillService(
+                market_repository,
+                history_repository,
+            ),
+        ),
         history_refresh=CachedOutputHistoryService(
             AODPHistoryClient(region),
             history_repository,

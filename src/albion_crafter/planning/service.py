@@ -20,13 +20,14 @@ from albion_crafter.core.mechanics import CURRENT_RULES, MechanicsRules
 from albion_crafter.core.models import ActionKind
 from albion_crafter.database.database import MarketPriceRepository, PriceOverrideRepository
 from albion_crafter.database.v3 import CraftingProfileRepository, MarketHistoryRepository
+from albion_crafter.market.estimation import DEFAULT_HISTORICAL_ESTIMATION_POLICY
 from albion_crafter.market.history import HistoryTimeScale, MarketHistoryInterval
 from albion_crafter.market.history_cache import (
     CachedHistoryRefreshResult,
     CachedOutputHistoryService,
 )
 from albion_crafter.market.liquidity import LiquidityAssessment, assess_liquidity
-from albion_crafter.market.models import MarketPrice, Region, UserPriceOverride
+from albion_crafter.market.models import MarketPrice, MarketSide, Region, UserPriceOverride
 
 from .arbitrage import ArbitrageCandidateEvaluator
 from .candidates import (
@@ -278,6 +279,8 @@ class FindMoneyService:
             )
         rejections = Counter(dict(active_preflight.rejection_counts))
         price_rows, override_rows = self._load_current_rows(active_preflight)
+        evaluation_at = self._now()
+        price_history_rows = self._load_price_history(active_preflight, evaluation_at)
         profile = self.crafting_profiles.load() or CraftingSkillProfile(
             available_focus=constraints.available_focus
         )
@@ -294,9 +297,10 @@ class FindMoneyService:
             active_preflight.arbitrage_routes,
             price_rows,
             override_rows,
+            price_history_rows,
             profile,
             constraints,
-            as_of=self._now(),
+            as_of=evaluation_at,
             cancelled=cancelled,
             progress=progress,
             stage=PlanningStage.INITIAL_EVALUATION,
@@ -445,6 +449,7 @@ class FindMoneyService:
             selected_arbitrage_routes,
             price_rows,
             override_rows,
+            price_history_rows,
             profile,
             constraints,
             liquidity_by_key=liquidity,
@@ -639,6 +644,30 @@ class FindMoneyService:
                         json.dumps(dict(sorted(rejections.items())), sort_keys=True),
                     ),
                     (
+                        "automatic_price_history_keys_requested",
+                        str(
+                            current_result.history_keys_requested
+                            if current_result is not None
+                            else 0
+                        ),
+                    ),
+                    (
+                        "automatic_price_history_estimates_available",
+                        str(
+                            current_result.historical_estimates_available
+                            if current_result is not None
+                            else 0
+                        ),
+                    ),
+                    (
+                        "automatic_price_history_keys_unresolved",
+                        str(
+                            current_result.history_keys_unresolved
+                            if current_result is not None
+                            else 0
+                        ),
+                    ),
+                    (
                         "pipeline_elapsed_seconds",
                         f"{time.perf_counter() - started_wall:.6f}",
                     ),
@@ -717,12 +746,41 @@ class FindMoneyService:
             ),
         )
 
+    def _load_price_history(
+        self,
+        preflight: FindMoneyPreflight,
+        as_of: datetime,
+    ) -> list[MarketHistoryInterval]:
+        sell_keys = {
+            assessment.requirement.key
+            for assessment in preflight.market_refresh.assessments
+            if assessment.requirement.required_for_actionability
+            and assessment.requirement.side is MarketSide.SELL_ORDER
+        }
+        if not sell_keys:
+            return []
+        rows: list[MarketHistoryInterval] = []
+        for quality in sorted({key.quality for key in sell_keys}):
+            quality_keys = tuple(key for key in sell_keys if key.quality == quality)
+            rows.extend(
+                self.history.list_for_items(
+                    preflight.constraints.region,
+                    tuple(sorted({key.item_id for key in quality_keys})),
+                    tuple(sorted({key.city for key in quality_keys}, key=str.casefold)),
+                    quality,
+                    as_of - DEFAULT_HISTORICAL_ESTIMATION_POLICY.volume_lookback,
+                    time_scale=HistoryTimeScale.DAILY,
+                )
+            )
+        return rows
+
     def _evaluate_candidates(
         self,
         production_routes,
         arbitrage_routes,
         price_rows,
         override_rows,
+        price_history_rows,
         profile: CraftingSkillProfile,
         constraints: FindMoneyConstraints,
         *,
@@ -753,6 +811,7 @@ class FindMoneyService:
             override_rows,
             profile,
             constraints,
+            history=price_history_rows,
             liquidity_by_key=liquidity_by_key,
             as_of=as_of,
             cancelled=cancelled,
@@ -765,6 +824,7 @@ class FindMoneyService:
             price_rows,
             override_rows,
             constraints,
+            history=price_history_rows,
             liquidity_by_key=liquidity_by_key,
             as_of=as_of,
             cancelled=cancelled,

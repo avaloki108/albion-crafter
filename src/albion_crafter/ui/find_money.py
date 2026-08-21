@@ -395,7 +395,7 @@ class FindMoneyView(QWidget):
         self.station_age.setValue(24)
         self.station_age.setSuffix(" h")
         self.allow_stale_station = QCheckBox("Allow stale station fees as advisory")
-        advanced.addWidget(QLabel("Max market age"), 1, 0)
+        advanced.addWidget(QLabel("Market age advisory"), 1, 0)
         advanced.addWidget(self.market_age, 1, 1)
         advanced.addWidget(QLabel("Max station-fee age"), 1, 2)
         advanced.addWidget(self.station_age, 1, 3)
@@ -1380,16 +1380,16 @@ class FindMoneyView(QWidget):
         )
         if many_missing:
             self.price_setup_note.setText(
-                f"{len(requirements):,} required prices are unavailable or outside the selected "
-                "freshness window. Refresh the broad Royal-market cache or use the 24-hour Fast "
-                "preset before resorting to a large manual-entry form. A full sync preserves the "
-                "real AODP observation ages; it cannot invent an order AODP has never seen."
+                f"{len(requirements):,} required prices are unavailable or invalid. Refresh the "
+                "broad Royal-market cache before resorting to a large manual-entry form. A full "
+                "sync preserves real AODP observation ages and automatically checks SELL history; "
+                "it cannot invent an order or historical activity AODP has never seen."
             )
         else:
             self.price_setup_note.setText(
-                "Sparse AODP refresh could not supply a usable current side. Missing values are "
-                "not treated as zero, and stale values are not silently re-dated. Enter the "
-                "price you currently see in Albion, or try refreshing again."
+                "Sparse AODP refresh could not supply a usable side. Missing values are not "
+                "treated as zero; old nonzero observations remain usable. Enter the price you "
+                "currently see in Albion, or try refreshing again."
             )
         self.price_setup_table.setVisible(not many_missing)
         self.price_setup_save_button.setVisible(not many_missing)
@@ -1398,7 +1398,7 @@ class FindMoneyView(QWidget):
         self._populate_price_setup_table(requirements if not many_missing else ())
         self.price_setup_status.setText(
             f"{len(requirements):,} required market price"
-            f"{'s remain' if len(requirements) != 1 else ' remains'} unavailable or too old."
+            f"{'s remain' if len(requirements) != 1 else ' remains'} unavailable or invalid."
         )
         self.price_setup.setVisible(bool(requirements))
 
@@ -1779,10 +1779,7 @@ class FindMoneyView(QWidget):
             value
             for value in preflight.market_refresh.assessments
             if value.requirement.required_for_actionability
-            and (
-                value.price is None
-                or value.freshness in {Freshness.STALE, Freshness.FUTURE, Freshness.UNKNOWN}
-            )
+            and (value.price is None or value.freshness is Freshness.FUTURE)
         )
 
     def _render_no_result(self, result: FindMoneyRunResult, *, unresolved: bool) -> None:
@@ -1806,7 +1803,7 @@ class FindMoneyView(QWidget):
             message = (
                 f"{preflight.summary.total_candidates:,} routes matched the search. "
                 f"{fully_priced:,} were fully priced, while required AODP observations remain "
-                "missing, stale, or invalid. Enter current Albion prices above or refresh again."
+                "missing or invalid. Enter current Albion prices above or refresh again."
             )
         elif fully_priced:
             heading = "NO PROFIT FOUND"

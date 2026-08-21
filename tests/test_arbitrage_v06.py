@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -29,7 +29,7 @@ from albion_crafter.database.v3 import (
     MarketHistoryRepository,
     StationFeeRepository,
 )
-from albion_crafter.market.history import HistoryTimeScale
+from albion_crafter.market.history import HistoryTimeScale, MarketHistoryInterval
 from albion_crafter.market.liquidity import LiquidityLevel
 from albion_crafter.market.models import MarketPrice, MarketSide, Region
 from albion_crafter.planning.arbitrage import ArbitrageCandidateEvaluator
@@ -44,6 +44,7 @@ from albion_crafter.planning.models import (
     OptimizationStatus,
     PlanCandidate,
     PlanReasonCode,
+    PlanReasonSeverity,
     PlanSnapshot,
     PlanStatus,
     TransportPolicy,
@@ -370,24 +371,49 @@ def test_arbitrage_evaluator_and_final_validator_recompute_immutable_evidence(
     }
 
 
+def test_sell_order_arbitrage_uses_labeled_history_when_current_sell_is_missing() -> None:
+    constraints = _constraints(sale_method=SaleMethod.SELL_ORDER)
+    route = generate_arbitrage_routes(constraints).routes[0]
+    eligible = EligibleArbitrageRoute(
+        Item("T5_METALBAR", "Titanium Steel Bar", 5, crafting_category="ore"),
+        route,
+    )
+    history = tuple(
+        MarketHistoryInterval(
+            "T5_METALBAR",
+            city,
+            1,
+            Region.AMERICAS,
+            NOW - timedelta(days=day),
+            20,
+            price,
+            HistoryTimeScale.DAILY,
+            NOW,
+        )
+        for city, price in (("Bridgewatch", 100), ("Thetford", 200))
+        for day in range(1, 8)
+    )
+
+    evaluation = ArbitrageCandidateEvaluator().evaluate(
+        (eligible,),
+        (),
+        (),
+        constraints,
+        history=history,
+        as_of=NOW,
+    )
+
+    assert evaluation.candidates
+    prices = json.loads(dict(evaluation.candidates[0].evidence)["prices"])
+    assert {value["source"] for value in prices} == {"HISTORICAL_ESTIMATE"}
+    assert all(value["confidence"] == "HIGH" for value in prices)
+
+
 @pytest.mark.parametrize(
     ("prices", "message"),
     (
         ((_market("T5_METALBAR", "Thetford", 200, 180),), "source price is missing"),
         ((_market("T5_METALBAR", "Bridgewatch", 100, 90),), "destination price is missing"),
-        (
-            (
-                _market_at(
-                    "T5_METALBAR",
-                    "Bridgewatch",
-                    100,
-                    90,
-                    datetime(2026, 8, 19, 6, tzinfo=UTC),
-                ),
-                _market("T5_METALBAR", "Thetford", 200, 180),
-            ),
-            "source price is stale",
-        ),
         (
             (
                 _market("T5_METALBAR", "Bridgewatch", 100, 90),
@@ -400,19 +426,6 @@ def test_arbitrage_evaluator_and_final_validator_recompute_immutable_evidence(
                 ),
             ),
             "destination price is materially future-dated",
-        ),
-        (
-            (
-                _market("T5_METALBAR", "Bridgewatch", 100, 90),
-                _market_at(
-                    "T5_METALBAR",
-                    "Thetford",
-                    200,
-                    180,
-                    datetime(2026, 8, 19, 6, tzinfo=UTC),
-                ),
-            ),
-            "destination price is stale",
         ),
         (
             (
@@ -443,6 +456,42 @@ def test_invalid_arbitrage_evidence_and_fee_erased_spreads_are_explained(
     assert result.near_misses
     assert message in " ".join(
         reason.message.casefold() for reason in result.near_misses[0].reasons
+    )
+
+
+@pytest.mark.parametrize("stale_city", ("Bridgewatch", "Thetford"))
+def test_stale_arbitrage_price_is_advisory_and_route_remains_eligible(stale_city) -> None:
+    constraints = _constraints()
+    route = generate_arbitrage_routes(constraints).routes[0]
+    eligible = EligibleArbitrageRoute(
+        Item("T5_METALBAR", "Titanium Steel Bar", 5, crafting_category="ore"),
+        route,
+    )
+    prices = tuple(
+        _market_at(
+            "T5_METALBAR",
+            city,
+            100 if city == "Bridgewatch" else 200,
+            90 if city == "Bridgewatch" else 180,
+            (datetime(2026, 8, 19, 6, tzinfo=UTC) if city == stale_city else NOW),
+        )
+        for city in ("Bridgewatch", "Thetford")
+    )
+
+    result = ArbitrageCandidateEvaluator().evaluate(
+        (eligible,),
+        prices,
+        (),
+        constraints,
+        as_of=NOW,
+    )
+
+    assert result.candidates
+    assert not result.near_misses
+    assert any(
+        reason.code is PlanReasonCode.STALE_MARKET_DATA
+        and reason.severity is PlanReasonSeverity.WARNING
+        for reason in result.candidates[0].reasons
     )
 
 

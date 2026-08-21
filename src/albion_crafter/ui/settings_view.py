@@ -101,6 +101,10 @@ class SettingsView(QWidget):
         self.max_age = QSpinBox()
         self.max_age.setRange(1, 168)
         self.max_age.setSuffix(" hours")
+        self.max_age.setToolTip(
+            "Controls age warnings and refresh attempts. An old nonzero market price remains "
+            "usable as the latest available observation."
+        )
         self.max_station_fee_age = QSpinBox()
         self.max_station_fee_age.setRange(1, 720)
         self.max_station_fee_age.setSuffix(" hours")
@@ -113,7 +117,7 @@ class SettingsView(QWidget):
         form.addRow("Default material-buy city", self.material_buy_city)
         form.addRow("Default production city", self.craft_city)
         form.addRow("Default selling city", self.sell_city)
-        form.addRow("Maximum market-data age", self.max_age)
+        form.addRow("Market age advisory threshold", self.max_age)
         form.addRow("Maximum station-fee age", self.max_station_fee_age)
         form.addRow("Focus", self.focus)
         form.addRow("Available Focus", self.available_focus)
