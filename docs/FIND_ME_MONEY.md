@@ -19,9 +19,11 @@ intact. Focus is unavailable until a usable saved profile exists, but non-Focus 
 
 If a required station fee is missing/stale, Simple Mode stops before market HTTP and asks inline
 for the exact displayed Albion fee. If sparse AODP refresh still leaves a required side
-missing or invalid, it offers an exact-side, exact-city user override inline. Stale nonzero market
-orders remain usable with a visible advisory. Both manual inputs are persisted with user
-provenance and timestamp, then the full preflight is rebuilt before planning continues.
+missing or invalid and no route can be fully priced, it offers an exact-side, exact-city user
+override inline. If other routes were fully priced, incomplete routes are skipped and reported as
+coverage instead of turning the completed search into a global data error. Stale nonzero market
+orders remain usable with a visible advisory. Both manual inputs are persisted with user provenance
+and timestamp, then the full preflight is rebuilt before planning continues.
 
 The broad cache and sparse planner refresh are complementary. **Market Data → REFRESH ROYAL
 MARKETS** can populate supported outputs and their recipe inputs across the Royal cities before a
@@ -33,22 +35,28 @@ Simple Mode recommends the broad sync before showing the optional large manual-e
 
 The three trust presets are transparent bundles of existing V0.6 controls:
 
-- Fast / broad: 24-hour prices, stale-station allowance, no history refresh, unknown liquidity
-  accepted; ideal for discovery after Royal Market Sync.
-- Careful: 4-hour prices, 24-hour station fees, history enabled, 20% historical-volume cap,
-  unknown liquidity accepted.
-- Strict: 2-hour prices, 12-hour station fees, history enabled, 10% historical-volume cap, at
-  least Moderate liquidity.
+- Fast / broad: a 24-hour market refresh target, stale-station allowance, no liquidity-history
+  refresh, and unknown liquidity accepted; ideal for discovery after Royal Market Sync.
+- Careful: a 4-hour market refresh target, 24-hour station fees, history enabled, 20% historical-
+  volume cap, and unknown liquidity accepted.
+- Strict: a 2-hour market refresh target, 12-hour station fees, history enabled, 10% historical-
+  volume cap, and at least Moderate liquidity.
+
+All three presets use the latest valid nonzero market price when AODP has nothing newer. Their
+market-age values control refresh attempts and age diagnostics, not price eligibility. In Simple
+Mode the visible preset is reapplied before preflight, so hidden saved Advanced Mode thresholds
+cannot silently make the named preset stricter than its description.
 
 Advanced Mode retains the independent action toggles, full route/city universe, transport and
 sale policies, precise freshness/threshold/cap controls, explicit two-stage preflight/run buttons,
 raw evidence counts, near misses, snapshots, and exports.
 
 Simple zero-action outcomes are not conflated: **Setup Required** is player-only station evidence;
-**Not Enough Data to Know** is unresolved required market evidence; **No Profit Found** is used
-only after complete price evidence produced fully priced candidates but no selectable allocation.
-Unsupported static recipes receive a separate supported-data explanation and are never presented
-as an Item Value field the player should guess.
+**Not Enough Data to Know** is used only when no matching route can be fully priced; **No Profit
+Found** means fully priced routes were evaluated but none had positive unit economics; and **No Plan
+Matched Your Settings** means positive fully priced routes existed but the selected bankroll,
+trust, quantity, or capacity rules excluded them. Unsupported static recipes receive a separate
+supported-data explanation and are never presented as an Item Value field the player should guess.
 
 ## Inputs and bounded universe
 
@@ -71,8 +79,9 @@ filters.
    overrides, and optional history coverage. It builds legal production and arbitrage routes,
    exact price-side requirements, cached/missing/stale/future counts, production-only station/FCE
    gaps, history-capacity keys, component/work estimates, and current AODP request batches.
-2. Explicit current refresh requests only required stale/missing keys. Complete batches persist
-   independently after a later failure or cancellation.
+2. Explicit current refresh requests only required old/missing keys. Complete batches persist
+   independently after a later failure or cancellation; if no newer observation is available, the
+   latest saved nonzero price remains usable with its original timestamp.
 3. Initial evaluation computes production modes and fee-aware one-unit arbitrage economics.
 4. Safe preprocessing removes only proven dominated/equivalent routes with identical capacity
    semantics.
@@ -98,8 +107,9 @@ there is no SQL or HTTP request per candidate.
 - Arbitrage instant sale: destination maximum buy.
 
 Trusted exact-side user overrides retain precedence without overwriting AODP cache rows. A zero or
-empty side is missing. Missing, stale, materially future-dated, malformed, or untrusted required
-evidence is never replaced by zero or the opposite market side.
+empty side is missing. Old nonzero observations remain usable and keep their true age. Missing,
+materially future-dated, malformed, or untrusted required evidence is never replaced by zero or the
+opposite market side.
 
 ## Arbitrage economics and evidence
 

@@ -869,19 +869,19 @@ class FindMoneyView(QWidget):
         preset = TrustPreset(str(self.trust_preset.currentData()))
         descriptions = {
             TrustPreset.FAST: (
-                "Fast / broad: accepts market observations up to 24 hours old, allows unknown "
-                "liquidity, and uses the explicit action cap without downloading history. It is "
-                "the best discovery preset after Refresh Royal Markets."
+                "Fast / broad: checks for newer market observations after 24 hours, allows "
+                "unknown liquidity, and uses the explicit action cap without downloading "
+                "liquidity history. If AODP has nothing newer, the latest nonzero price is used."
             ),
             TrustPreset.CAREFUL: (
-                "Careful: uses market observations up to 4 hours old and historical liquidity "
-                "when available, while retaining opportunities whose liquidity is unknown. A "
-                "full sync can still return observations older than this window."
+                "Careful: checks prices older than 4 hours for newer observations and uses "
+                "historical liquidity when available. If AODP has nothing newer, the latest "
+                "nonzero price stays usable with its real age shown."
             ),
             TrustPreset.STRICT: (
-                "Strict: requires observations no older than 2 hours, current station fees, "
-                "history enrichment, and at least moderate liquidity. It may reject many values "
-                "even immediately after a full sync because fetch time is not observation time."
+                "Strict: checks prices older than 2 hours, requires current station fees, history "
+                "enrichment, and at least moderate liquidity. Old nonzero market prices still "
+                "remain usable; station-fee and liquidity rules can reject an opportunity."
             ),
         }
         self.trust_explanation.setText(descriptions[preset])
@@ -1173,6 +1173,12 @@ class FindMoneyView(QWidget):
         if self._thread is not None:
             self._set_status("A Find Me Money run is already active.", "aging")
             return
+        # Simple Mode exposes a named trust preset instead of the underlying
+        # controls, so that visible choice must be authoritative.  Saved custom
+        # Advanced Mode settings can otherwise be inferred as "Careful" while
+        # silently retaining a stricter liquidity threshold.
+        if not self.advanced_toggle.isChecked():
+            self._trust_preset_changed()
         self._simple_run_requested = True
         self.station_setup.setVisible(False)
         self.price_setup.setVisible(False)
@@ -1233,7 +1239,9 @@ class FindMoneyView(QWidget):
                 f"Preflight complete: {len(preflight.eligible):,} eligible recipe routes and "
                 f"{len(preflight.arbitrage_routes):,} arbitrage routes; "
                 f"{attention:,} station fees need attention; {refresh_keys:,} current-price keys "
-                f"need refresh in {preflight.market_refresh.estimated_batches:,} bounded batches. "
+                "will be checked for newer observations in "
+                f"{preflight.market_refresh.estimated_batches:,} bounded batches. "
+                "Older nonzero prices remain usable if no newer value is returned. "
                 f"Review this evidence, then explicitly run Refresh & Plan.{workload_note}"
             )
         else:
@@ -1241,7 +1249,8 @@ class FindMoneyView(QWidget):
                 f"Setup check complete: "
                 f"{len(preflight.eligible) + len(preflight.arbitrage_routes):,} eligible routes, "
                 f"{attention:,} saved station fees need attention, and {refresh_keys:,} market "
-                "prices need refresh."
+                "prices will be checked for newer observations. Older nonzero prices remain "
+                "usable if AODP has nothing newer."
                 + (
                     " This is a very large search; safety limits may make the result Approximate."
                     if preflight.workload.warning is not None
@@ -1570,9 +1579,10 @@ class FindMoneyView(QWidget):
         self.market_summary.setText(
             "MARKET DATA · "
             f"{summary.required_current_price_keys:,} prices required · "
-            f"{fresh:,} usable now · {summary.stale_current_requirements:,} stale · "
+            f"{fresh:,} within target age · {summary.stale_current_requirements:,} older but "
+            "usable · "
             f"{unavailable:,} unavailable/invalid · "
-            f"{summary.refresh_requirements:,} will be refreshed."
+            f"{summary.refresh_requirements:,} will be checked for newer data."
         )
         supported = getattr(summary, "supported_catalog_recipes", summary.candidate_recipes)
         matched = getattr(summary, "matched_recipes", summary.candidate_recipes)
@@ -1765,9 +1775,14 @@ class FindMoneyView(QWidget):
             self._render_snapshot(result.snapshot, historical=False)
             if not result.snapshot.actions:
                 unresolved = self._unresolved_price_requirements(result.preflight)
-                if unresolved:
+                initial = result.initial_evaluation
+                has_fully_priced_routes = bool(initial is not None and initial.candidates)
+                data_blocks_result = bool(unresolved) and not has_fully_priced_routes
+                if data_blocks_result:
                     self._render_price_setup(unresolved)
-                self._render_no_result(result, unresolved=bool(unresolved))
+                else:
+                    self.price_setup.setVisible(False)
+                self._render_no_result(result, unresolved=data_blocks_result)
             self.refresh_recent_snapshots()
             self.plan_completed.emit(result.snapshot)
 
@@ -1798,33 +1813,45 @@ class FindMoneyView(QWidget):
             if initial is not None
             else 0
         )
-        if unresolved:
-            heading = "NOT ENOUGH DATA TO KNOW"
+        if fully_priced and profitable:
+            heading = "NO PLAN MATCHED YOUR SETTINGS"
             message = (
-                f"{preflight.summary.total_candidates:,} routes matched the search. "
-                f"{fully_priced:,} were fully priced, while required AODP observations remain "
-                "missing or invalid. Enter current Albion prices above or refresh again."
+                f"WE CHECKED {fully_priced:,} FULLY-PRICED OPPORTUNITIES\n"
+                f"{profitable:,} had positive per-unit economics, but none passed the current "
+                "bankroll, trust, quantity, and shared-capacity settings. Routes with unavailable "
+                "prices were skipped and did not invalidate this completed search."
             )
+            state = "aging"
         elif fully_priced:
             heading = "NO PROFIT FOUND"
             message = (
                 f"WE CHECKED {fully_priced:,} FULLY-PRICED OPPORTUNITIES\n"
-                f"{profitable:,} had positive per-unit economics before final bankroll, trust, "
-                "and shared-capacity allocation. None produced a selectable plan under the "
-                "current budget and policies."
+                "None had positive per-unit economics under the current prices and settings. "
+                "Routes with unavailable prices were skipped and did not invalidate this "
+                "completed search."
             )
+            state = "aging"
+        elif unresolved:
+            heading = "NOT ENOUGH DATA TO KNOW"
+            message = (
+                f"{preflight.summary.total_candidates:,} routes matched the search. "
+                "None could be fully priced because required AODP observations remain missing or "
+                "invalid. Enter current Albion prices above or refresh again."
+            )
+            state = "unknown"
         else:
             heading = "NOT ENOUGH SUPPORTED DATA TO KNOW"
             message = (
                 "Matching routes existed, but none had complete verified static and market "
                 "evidence. Unsupported catalog coverage is kept out of the ordinary result."
             )
+            state = "unknown"
         self.plan_banner.setText(heading)
-        self._repolish(self.plan_banner, "unknown" if unresolved or not fully_priced else "aging")
+        self._repolish(self.plan_banner, state)
         self.simple_result_summary.setText(
             message + "\n\n" + self._player_rejection_summary(dict(result.rejection_counts))
         )
-        self._set_status(heading.replace(" TO KNOW", "").title(), "unknown")
+        self._set_status(heading.replace(" TO KNOW", "").title(), state)
         self.tabs.setCurrentIndex(1)
 
     @staticmethod
@@ -1835,15 +1862,17 @@ class FindMoneyView(QWidget):
                 "stale_station_fee",
                 "future_station_fee",
                 "future_user_override",
-                "stale_user_override",
             },
-            "MARKET DATA UNAVAILABLE": {
+            "SKIPPED — MARKET DATA UNAVAILABLE": {
                 "missing_material_price",
                 "missing_output_price",
-                "stale_market_data",
                 "future_market_data",
-                "stale_price",
                 "future_timestamp",
+            },
+            "AGE ADVISORY ONLY — LATEST PRICE WAS USED": {
+                "stale_user_override",
+                "stale_market_data",
+                "stale_price",
                 "unknown_timestamp",
             },
             "CURRENTLY UNPROFITABLE": {

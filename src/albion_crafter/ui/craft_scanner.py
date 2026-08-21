@@ -176,8 +176,12 @@ class CraftScannerView(QWidget):
         )
         self.maximum_age = QSpinBox()
         self.maximum_age.setRange(1, 168)
-        self.maximum_age.setSuffix("h max age")
+        self.maximum_age.setSuffix("h refresh target")
         self.maximum_age.setValue(int(self._setting("max_market_age_hours")))
+        self.maximum_age.setToolTip(
+            "Prices older than this are highlighted for refresh, but the newest saved nonzero "
+            "price remains usable if AODP has nothing newer."
+        )
         self.liquidity = QComboBox()
         self.liquidity.addItem("Any liquidity", None)
         for level in LiquidityLevel:
@@ -444,7 +448,7 @@ class CraftScannerView(QWidget):
         self.market_sync_button.setVisible(empty_actionable and market_rejections > 0)
         if empty_actionable:
             rejection_labels = {
-                "market_data": "missing or stale market prices",
+                "market_data": "missing or invalid market prices",
                 "unsupported_static": "unsupported static data",
                 "setup_required": "station or Focus setup required",
                 "unprofitable": "unprofitable or below profit/ROI filters",
@@ -464,7 +468,7 @@ class CraftScannerView(QWidget):
             self.zero_results.setText(
                 "0 actionable results\n\n"
                 f"{snapshot.scenarios_evaluated:,} scenarios checked. None passed every saved "
-                "price-freshness, static-data, station-fee, profitability, and liquidity rule. "
+                "price-availability, static-data, station-fee, profitability, and liquidity rule. "
                 "\n\nReason summary:\n"
                 + "\n".join(reason_lines)
                 + "\n\nShow non-actionable opportunities to inspect the individual reasons."

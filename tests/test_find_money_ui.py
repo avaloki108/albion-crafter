@@ -42,6 +42,7 @@ from albion_crafter.planning.models import (
     ArbitrageScope,
     FindMoneyConstraints,
     MarketKey,
+    MinimumLiquidity,
     PriceRequirement,
     PriceRole,
     TransportPolicy,
@@ -970,6 +971,89 @@ def test_simple_mode_reports_no_profit_only_after_complete_pricing(qt_app, tmp_p
     assert view.plan_banner.text() == "NO PROFIT FOUND"
     assert "FULLY-PRICED OPPORTUNITIES" in view.simple_result_summary.text()
     assert view.price_setup.isHidden()
+    view.close()
+
+
+def test_simple_mode_applies_visible_careful_preset_to_saved_advanced_settings(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    saved = replace(
+        constraints,
+        history_enabled=True,
+        minimum_liquidity=MinimumLiquidity.HIGH,
+        allow_stale_station_fees=True,
+    )
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=saved,
+    )
+
+    assert view.trust_preset.currentData() == TrustPreset.CAREFUL.value
+    assert view.minimum_liquidity.currentData() == MinimumLiquidity.HIGH.value
+
+    view.find_money()
+    assert view.preflight is not None
+    assert view.preflight.constraints.minimum_liquidity is MinimumLiquidity.ANY
+    assert not view.preflight.constraints.allow_stale_station_fees
+    _wait_until(qt_app, lambda: view._thread is None)
+    view.close()
+
+
+def test_fully_priced_routes_are_not_invalidated_by_other_missing_prices(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    service.market_prices.upsert_many((_price("T4_MAIN_SWORD", 100),))
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+    view._unresolved_price_requirements = lambda _preflight: _missing_assessments(1)  # type: ignore[method-assign]
+
+    view.find_money()
+    _wait_until(qt_app, lambda: view._thread is None)
+
+    assert view.plan_banner.text() == "NO PROFIT FOUND"
+    assert "did not invalidate this completed search" in view.simple_result_summary.text()
+    assert view.plan_banner.property("freshness") == "aging"
+    assert view.status.property("freshness") == "aging"
+    assert view.price_setup.isHidden()
+    view.close()
+
+
+def test_positive_fully_priced_routes_filtered_by_settings_are_not_data_errors(
+    qt_app,
+    tmp_path,
+) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    strict = replace(constraints, minimum_liquidity=MinimumLiquidity.HIGH)
+    result = service.execute(
+        service.preflight(strict, as_of=NOW),
+        refresh_current=False,
+        refresh_history=False,
+    )
+    assert result.snapshot is not None and not result.snapshot.actions
+    assert result.initial_evaluation is not None and result.initial_evaluation.candidates
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+
+    view._render_no_result(result, unresolved=True)
+
+    assert view.plan_banner.text() == "NO PLAN MATCHED YOUR SETTINGS"
+    assert "did not invalidate this completed search" in view.simple_result_summary.text()
+    assert view.plan_banner.property("freshness") == "aging"
+    assert view.status.property("freshness") == "aging"
     view.close()
 
 

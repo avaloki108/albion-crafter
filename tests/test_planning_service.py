@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from urllib.error import URLError
 
 from albion_crafter.core.crafting_profile import CraftingSkillProfile
 from albion_crafter.core.mechanics import CURRENT_RULES
@@ -21,7 +22,7 @@ from albion_crafter.database.v3 import (
     MarketHistoryRepository,
     StationFeeRepository,
 )
-from albion_crafter.market.aodp import BatchFailure
+from albion_crafter.market.aodp import AODPClient, BatchFailure
 from albion_crafter.market.history import (
     HistoryFetchResult,
     HistoryTimeScale,
@@ -30,6 +31,7 @@ from albion_crafter.market.history import (
 from albion_crafter.market.history_cache import CachedHistoryRefreshResult
 from albion_crafter.market.liquidity import LiquidityLevel
 from albion_crafter.market.models import MarketPrice, Region
+from albion_crafter.planning.current_refresh import CurrentMarketRefreshExecutor
 from albion_crafter.planning.models import (
     FindMoneyConstraints,
     MinimumLiquidity,
@@ -197,6 +199,73 @@ def test_service_requires_explicit_execute_and_persists_validated_snapshot(tmp_p
     assert snapshots.load("service-plan") == result.snapshot
     assert progress[0].stage is PlanningStage.PREFLIGHT
     assert progress[-1].stage is PlanningStage.COMPLETE
+
+
+def test_failed_freshness_refresh_keeps_latest_stale_prices_and_plan_continues(tmp_path) -> None:
+    service, _, _ = _stack(tmp_path)
+    old = NOW - timedelta(hours=6)
+    with service.market_prices.database.connection() as connection:
+        connection.execute(
+            """UPDATE market_prices
+               SET sell_price_timestamp = ?, buy_price_timestamp = ?""",
+            (old.isoformat(), old.isoformat()),
+        )
+
+    attempts = 0
+
+    def unavailable(_url: str, _timeout: float) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        raise URLError("simulated AODP outage")
+
+    service.current_refresh = CurrentMarketRefreshExecutor(
+        service.market_prices,
+        client_factory=lambda region: AODPClient(
+            region,
+            transport=unavailable,
+            retry_backoff_seconds=0,
+            wall_clock=lambda: NOW,
+        ),
+    )
+    constraints = _constraints(max_market_age=timedelta(hours=4))
+    preflight = service.preflight(constraints, as_of=NOW)
+
+    assert len(preflight.market_refresh.refresh_keys) == 2
+    result = service.execute(preflight, refresh_current=True, refresh_history=False)
+
+    assert attempts == 2
+    assert result.current_refresh is not None
+    assert result.current_refresh.batches_failed == 1
+    assert result.snapshot is not None and result.snapshot.actions
+    assert result.snapshot.plan_status is PlanStatus.ADVISORY
+    assert PlanReasonCode.STALE_MARKET_DATA in {reason.code for reason in result.snapshot.reasons}
+    assert all(
+        service.market_prices.get(item_id, "Bridgewatch", 1, Region.AMERICAS).sell_price_timestamp
+        == old
+        for item_id in ("T4_METALBAR", "T4_MAIN_SWORD")
+    )
+
+
+def test_unknown_price_age_is_advisory_when_latest_nonzero_price_exists(tmp_path) -> None:
+    service, _, _ = _stack(tmp_path)
+    with service.market_prices.database.connection() as connection:
+        connection.execute(
+            """UPDATE market_prices
+               SET sell_price_timestamp = NULL
+               WHERE item_id = 'T4_MAIN_SWORD'"""
+        )
+    constraints = _constraints(max_market_age=timedelta(hours=4))
+    preflight = service.preflight(constraints, as_of=NOW)
+
+    assert len(preflight.market_refresh.refresh_keys) == 1
+    result = service.execute(preflight, refresh_current=False, refresh_history=False)
+
+    assert result.snapshot is not None and result.snapshot.actions
+    assert result.snapshot.plan_status is PlanStatus.ADVISORY
+    assert PlanReasonCode.INVALID_ACTION_EVIDENCE not in {
+        reason.code for reason in result.snapshot.reasons
+    }
+    assert PlanReasonCode.STALE_MARKET_DATA in {reason.code for reason in result.snapshot.reasons}
 
 
 def test_independent_evidence_validation_rejects_tampered_accounting(tmp_path) -> None:

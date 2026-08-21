@@ -28,7 +28,8 @@ def default_plan_assumptions(constraints: FindMoneyConstraints) -> tuple[str, ..
         "Normal quality only; equipment-quality expected value is not modeled.",
         f"Sale method: {constraints.sale_method.value.replace('_', ' ')}.",
         "Production materials and arbitrage sources use current minimum sell-order acquisition.",
-        f"Required market observations may be at most {_hours(constraints.max_market_age)} old.",
+        f"Market observations older than {_hours(constraints.max_market_age)} trigger a refresh "
+        "attempt and age advisory; the latest valid nonzero price remains usable.",
         f"Station-fee observations may be at most {_hours(constraints.max_station_fee_age)} old.",
         "Pre-revenue capital uses gross input purchase, station, sell-order setup, and "
         "explicit transport cash; transaction tax is deducted after sale.",

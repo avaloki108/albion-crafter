@@ -493,6 +493,34 @@ def test_stale_arbitrage_price_is_advisory_and_route_remains_eligible(stale_city
         and reason.severity is PlanReasonSeverity.WARNING
         for reason in result.candidates[0].reasons
     )
+    candidate = result.candidates[0]
+    ceilings = {
+        requirement.key: _ceiling(requirement.key, 2)
+        for requirement in candidate.capacity_requirements
+    }
+    optimized = PlanningOptimizer().optimize((candidate,), ceilings, constraints)
+
+    validation = validate_plan(
+        optimized,
+        constraints,
+        ceilings,
+        as_of=NOW,
+        freshness_hooks=(
+            *default_freshness_hooks(constraints),
+            action_evidence_hook(constraints, CURRENT_RULES),
+        ),
+    )
+
+    assert validation.is_feasible
+    assert validation.status is PlanStatus.ADVISORY
+    assert PlanReasonCode.INVALID_ACTION_EVIDENCE not in {
+        reason.code for reason in validation.reasons
+    }
+    assert any(
+        reason.code is PlanReasonCode.STALE_MARKET_DATA
+        and reason.severity is PlanReasonSeverity.WARNING
+        for reason in validation.reasons
+    )
 
 
 def _candidate(

@@ -56,7 +56,9 @@ margin            = profit / gross destination value
 ```
 
 All currency outputs are conservatively quantized by the candidate/action boundary. Nonpositive,
-stale, future, malformed, or untrusted required prices do not become candidates.
+materially future-dated, malformed, or untrusted required prices do not become candidates. An old
+nonzero market observation remains usable as the latest available price, with its real age retained
+as an advisory.
 
 ## Station and transport
 

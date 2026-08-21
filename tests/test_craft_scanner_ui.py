@@ -63,7 +63,7 @@ def test_zero_actionable_scan_explains_scope_and_offers_reason_inspection(
     assert not view.zero_results.isHidden()
     assert "0 actionable results" in view.zero_results.text()
     assert "81 scenarios checked" in view.zero_results.text()
-    assert "31 missing or stale market prices" in view.zero_results.text()
+    assert "31 missing or invalid market prices" in view.zero_results.text()
     assert "28 unprofitable" in view.zero_results.text()
     assert "22 unsupported static data" in view.zero_results.text()
     assert "individual reasons" in view.zero_results.text()

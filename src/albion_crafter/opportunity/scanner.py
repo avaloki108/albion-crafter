@@ -52,7 +52,7 @@ _SCAN_NOTES = (
     "higher qualities block actionability.",
     "Current AODP values are top-of-book unit observations; order depth is not modeled.",
     "Daily AODP sell history may provide a labeled estimate when a current SELL price is "
-    "missing or stale; BUY prices never use history.",
+    "missing; old nonzero current orders remain usable, and BUY prices never use history.",
 )
 
 

@@ -495,7 +495,12 @@ def action_evidence_hook(
             reasons.append(
                 _invalid_evidence(action, "exactly one required output price is required")
             )
-        evidence_oldest = min(required_timestamps) if required_timestamps else None
+        required_line_count = material_line_count + output_count
+        evidence_oldest = (
+            min(required_timestamps)
+            if required_line_count and len(required_timestamps) == required_line_count
+            else None
+        )
         if evidence_oldest != action.oldest_market_observed_at:
             reasons.append(_invalid_evidence(action, "oldest market timestamp is inconsistent"))
 
@@ -830,11 +835,23 @@ def _validate_arbitrage_evidence(
         observed_at = _parse_evidence_datetime(raw_line.get("observed_at"))
         if observed_at is not None:
             timestamps.append(observed_at)
-        if market_policy.classify(observed_at, now=as_of) not in {
-            Freshness.FRESH,
-            Freshness.AGING,
-        }:
-            reasons.append(_invalid_evidence(action, f"{role} evidence is not current"))
+        freshness = market_policy.classify(observed_at, now=as_of)
+        if freshness is Freshness.FUTURE:
+            reasons.append(
+                PlanReason(
+                    PlanReasonCode.FUTURE_MARKET_DATA,
+                    f"Action {action.candidate_id} has materially future-dated {role} evidence.",
+                )
+            )
+        elif freshness not in {Freshness.FRESH, Freshness.AGING}:
+            reasons.append(
+                PlanReason(
+                    PlanReasonCode.STALE_MARKET_DATA,
+                    f"Action {action.candidate_id} uses the latest available {role} price; "
+                    "its observation timestamp is old or unavailable.",
+                    PlanReasonSeverity.WARNING,
+                )
+            )
     if sorted(seen_roles) != sorted(expected_lines):
         reasons.append(_invalid_evidence(action, "source and destination prices must be unique"))
     if (min(timestamps) if len(timestamps) == 2 else None) != action.oldest_market_observed_at:
