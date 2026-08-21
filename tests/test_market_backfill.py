@@ -150,3 +150,73 @@ def test_empty_history_is_unresolved_upstream_absence_not_an_error(tmp_path) -> 
     assert result.resolved_count == 0
     assert result.unresolved_keys == (("NEVER_TRADED", "Bridgewatch", 1),)
     assert not result.has_errors
+
+
+def test_large_backfill_runs_across_multiple_capped_operations(tmp_path) -> None:
+    database = Database(tmp_path / "large-backfill.db")
+    database.initialize()
+    market = MarketPriceRepository(database, wall_clock=lambda: NOW)
+    item_ids = tuple(f"I{index:04d}" for index in range(2_650))
+    requests: list[tuple[str, ...]] = []
+    progress: list[tuple[int, int]] = []
+
+    class InMemoryHistoryRepository:
+        retention = timedelta(days=30)
+
+        def __init__(self) -> None:
+            self.coverage = []
+
+        def upsert_many(self, _records) -> None:
+            return
+
+        def set_coverage(self, value) -> None:
+            self.coverage.append(value)
+
+        def prune_before(self, _cutoff) -> int:
+            return 0
+
+        def list_for_items(self, *_args, **_kwargs) -> list:
+            return []
+
+    history = InMemoryHistoryRepository()
+
+    def transport(url: str, _timeout: float) -> bytes:
+        path = urlparse(url).path.partition("/history/")[2].removesuffix(".json")
+        requests.append(tuple(unquote(value) for value in path.split(",")))
+        return b"[]"
+
+    service = MissingSellHistoryBackfillService(
+        market,
+        history,  # type: ignore[arg-type]
+        client_factory=lambda region: AODPHistoryClient(
+            region,
+            batch_size=100,
+            max_batches=25,
+            transport=transport,
+            wall_clock=lambda: NOW,
+            retry_backoff_seconds=0,
+        ),
+        cache_service_factory=lambda client, repository: CachedOutputHistoryService(
+            client,
+            repository,
+            wall_clock=lambda: NOW,
+        ),
+    )
+
+    result = service.refresh_missing(
+        Region.AMERICAS,
+        item_ids,
+        ("Bridgewatch",),
+        as_of=NOW,
+        on_progress=lambda value: progress.append((value.batch_number, value.batch_count)),
+    )
+
+    assert len(requests) == 27
+    assert [len(batch) for batch in requests] == [100] * 26 + [50]
+    assert tuple(item_id for batch in requests for item_id in batch) == item_ids
+    assert progress == [(batch_number, 27) for batch_number in range(1, 28)]
+    assert result.batches_planned == 27
+    assert result.batches_succeeded == 27
+    assert result.batches_failed == 0
+    assert result.unresolved_count == len(item_ids)
+    assert len(history.coverage) == len(item_ids)

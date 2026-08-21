@@ -1882,10 +1882,12 @@ class FindMoneyView(QWidget):
     def _worker_failed(self, worker: FindMoneyWorker, message: str) -> None:
         if worker is not self._worker:
             return
-        self.progress.setValue(0)
-        self.stage_label.setText("Failed")
+        completed = self.progress.value()
+        self.progress.setFormat(f"Stopped after {completed}%")
+        self.stage_label.setText("Stopped after partial progress")
         self._set_status(
-            "Find Me Money failed without invalidating successful cache writes: " + message,
+            "Find Me Money stopped after partial progress. Completed market-data writes were "
+            "kept. " + message,
             "unknown",
         )
 
@@ -1926,6 +1928,7 @@ class FindMoneyView(QWidget):
 
     def _reset_stage_progress(self) -> None:
         self.progress.setRange(0, 100)
+        self.progress.setFormat("%p%")
         self.progress.setValue(0)
         self.stage_label.setText("Starting")
 

@@ -439,6 +439,32 @@ def test_cancellation_returns_page_to_usable_state(qt_app, tmp_path) -> None:
     view.close()
 
 
+def test_worker_failure_keeps_completed_progress_visible(qt_app, tmp_path) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+    worker = object()
+    view._worker = worker  # type: ignore[assignment]
+    view.progress.setValue(18)
+
+    view._worker_failed(worker, "ValueError: simulated failure")  # type: ignore[arg-type]
+
+    assert view.progress.value() == 18
+    assert view.progress.format() == "Stopped after 18%"
+    assert view.stage_label.text() == "Stopped after partial progress"
+    assert "Completed market-data writes were kept" in view.status.text()
+
+    view._reset_stage_progress()
+    assert view.progress.value() == 0
+    assert view.progress.format() == "%p%"
+    view._worker = None
+    view.close()
+
+
 def test_unified_controls_mixed_counts_refining_summary_evidence_and_exports(
     qt_app,
     tmp_path,

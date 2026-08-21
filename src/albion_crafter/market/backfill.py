@@ -151,40 +151,68 @@ class MissingSellHistoryBackfillService:
             if client.region is not region:
                 raise ValueError("history backfill client factory returned the wrong region")
             service = self.cache_service_factory(client, self.history)
-
-            def report(
-                progress: HistoryBatchProgress,
-                *,
-                selected_city: str = city,
-                selected_city_number: int = city_number,
-            ) -> None:
-                if on_progress is not None:
-                    on_progress(
-                        MissingSellHistoryProgress(
-                            city=selected_city,
-                            city_number=selected_city_number,
-                            city_count=len(active_cities),
-                            batch_number=progress.batch_number,
-                            batch_count=progress.batch_count,
-                            item_ids=progress.item_ids,
-                            records_returned=progress.records_returned,
-                            successful=progress.successful,
-                        )
-                    )
-
-            refresh = service.refresh_market_items(
+            start_date = (resolution_time - self.policy.volume_lookback).date()
+            end_date = resolution_time.date()
+            planned_batches = client.plan_history_batches(
                 missing_by_city[city],
-                start_date=(resolution_time - self.policy.volume_lookback).date(),
-                end_date=resolution_time.date(),
+                start_date=start_date,
+                end_date=end_date,
                 cities=(city,),
                 qualities=(quality,),
                 time_scale=HistoryTimeScale.DAILY,
-                is_cancelled=is_cancelled,
-                on_progress=report,
             )
-            refreshes.append(refresh)
-            if refresh.cancelled:
-                cancelled = True
+
+            # ``max_batches`` is a cap for one client operation, not a reason to
+            # reject an explicitly selected larger backfill. Execute consecutive
+            # capped operations while preserving the exact safe URL boundaries.
+            for batch_offset in range(0, len(planned_batches), client.max_batches):
+                if is_cancelled is not None and is_cancelled():
+                    cancelled = True
+                    break
+                operation_batches = planned_batches[
+                    batch_offset : batch_offset + client.max_batches
+                ]
+                operation_item_ids = tuple(
+                    item_id for batch in operation_batches for item_id in batch
+                )
+
+                def report(
+                    progress: HistoryBatchProgress,
+                    *,
+                    selected_city: str = city,
+                    selected_city_number: int = city_number,
+                    completed_before: int = batch_offset,
+                    city_batch_count: int = len(planned_batches),
+                ) -> None:
+                    if on_progress is not None:
+                        on_progress(
+                            MissingSellHistoryProgress(
+                                city=selected_city,
+                                city_number=selected_city_number,
+                                city_count=len(active_cities),
+                                batch_number=completed_before + progress.batch_number,
+                                batch_count=city_batch_count,
+                                item_ids=progress.item_ids,
+                                records_returned=progress.records_returned,
+                                successful=progress.successful,
+                            )
+                        )
+
+                refresh = service.refresh_market_items(
+                    operation_item_ids,
+                    start_date=start_date,
+                    end_date=end_date,
+                    cities=(city,),
+                    qualities=(quality,),
+                    time_scale=HistoryTimeScale.DAILY,
+                    is_cancelled=is_cancelled,
+                    on_progress=report,
+                )
+                refreshes.append(refresh)
+                if refresh.cancelled:
+                    cancelled = True
+                    break
+            if cancelled:
                 break
 
         resolved = self._resolved_history_keys(region, requested, resolution_time)

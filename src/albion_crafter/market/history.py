@@ -399,6 +399,33 @@ class AODPHistoryClient:
             completed_item_ids=tuple(completed_item_ids),
         )
 
+    def plan_history_batches(
+        self,
+        item_ids: Sequence[str],
+        *,
+        start_date: date,
+        end_date: date,
+        cities: Sequence[str],
+        qualities: Sequence[int] = (1,),
+        time_scale: HistoryTimeScale = HistoryTimeScale.DAILY,
+    ) -> tuple[tuple[str, ...], ...]:
+        """Plan safe history URL batches without applying the execution cap."""
+
+        unique_ids = _deduplicate_item_ids(item_ids)
+        city_values = self._validate_cities(cities)
+        quality_values = _validate_qualities(qualities)
+        scale = self._validate_window(start_date, end_date, time_scale)
+        return tuple(
+            self._bounded_batches(
+                unique_ids,
+                start_date=start_date,
+                end_date=end_date,
+                cities=city_values,
+                qualities=quality_values,
+                time_scale=scale,
+            )
+        )
+
     def _fetch_url(
         self,
         url: str,
