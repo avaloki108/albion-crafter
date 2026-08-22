@@ -395,6 +395,38 @@ class PriceResolver:
             as_of=resolution_time,
         )
 
+    def resolve_item(
+        self,
+        item_id: str,
+        *,
+        city: str,
+        quality: int,
+        region: Region,
+        side: MarketSide,
+        freshness_policy: FreshnessPolicy,
+        as_of: datetime | None = None,
+        role: str = "item",
+    ) -> ResolvedPrice:
+        """Resolve one standalone market item using the shared trust policy.
+
+        Loadouts and shopping lists are not recipes, but they must still follow
+        the same override/current/history/missing rules as production pricing.
+        """
+
+        resolution_time = as_of or datetime.now(UTC)
+        if resolution_time.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        return self._resolve_one(
+            item_id,
+            city,
+            quality,
+            region,
+            side,
+            freshness_policy,
+            resolution_time,
+            role=role,
+        )
+
     def _resolve_one(
         self,
         item_id: str,

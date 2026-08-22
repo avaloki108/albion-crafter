@@ -392,6 +392,49 @@ class CatalogRepository:
             ).fetchall()
         return [self._item_from_row(row) for row in rows]
 
+    def search_items(
+        self,
+        query: str = "",
+        *,
+        categories: tuple[str, ...] = (),
+        subcategories: tuple[str, ...] = (),
+        limit: int = 100,
+    ) -> list[Item]:
+        """Search the complete static catalog for bounded item-picker results.
+
+        Unlike :meth:`search_recipes`, this intentionally includes non-craftable
+        equipment such as mounts. Category filters are supplied by trusted UI
+        slot definitions rather than raw SQL identifiers.
+        """
+
+        if limit < 1:
+            return []
+        clauses = ["i.tier IS NOT NULL"]
+        values: list[object] = []
+        if query.strip():
+            clauses.append("(i.display_name LIKE ? OR i.item_id LIKE ?)")
+            pattern = f"%{query.strip()}%"
+            values.extend((pattern, pattern))
+        for column, selected in (
+            ("i.category", categories),
+            ("i.subcategory", subcategories),
+        ):
+            if selected:
+                clauses.append(f"{column} IN ({','.join('?' for _ in selected)})")
+                values.extend(selected)
+        values.append(limit)
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT i.* FROM catalog_items i
+                WHERE {" AND ".join(clauses)}
+                ORDER BY i.display_name, i.tier, i.enchantment, i.item_id
+                LIMIT ?
+                """,  # noqa: S608 - clauses and identifiers are fixed internally
+                values,
+            ).fetchall()
+        return [self._item_from_row(row) for row in rows]
+
     def import_metadata(self) -> CatalogImport | None:
         with self.database.connection() as connection:
             row = connection.execute(
