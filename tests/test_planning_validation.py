@@ -116,6 +116,50 @@ def test_validation_rejects_shared_capacity_double_spend() -> None:
     }
 
 
+def test_fallback_capacity_counts_production_batches_not_output_items() -> None:
+    constraints = FindMoneyConstraints(
+        1_000,
+        0,
+        use_focus=False,
+        per_item_craft_cap=10,
+        history_enabled=True,
+    )
+    candidate = PlanCandidate(
+        "ten-output-batch",
+        "T4_POTION",
+        "Potion",
+        CandidateRoute(
+            Region.AMERICAS,
+            "Bridgewatch",
+            "Bridgewatch",
+            "Bridgewatch",
+            TransportPolicy.LOCAL_ONLY,
+        ),
+        CandidateEconomics(1, 1),
+        output_quantity_per_craft=10,
+        liquidity=LiquidityLevel.MODERATE,
+    )
+    key = candidate.execution_capacity_key
+    ceilings = {
+        key: QuantityCeiling(
+            key,
+            10,
+            None,
+            QuantityCeilingSource.EXPLICIT_FALLBACK_NO_HISTORY,
+            explanation="No reliable history; use the explicit ten-batch fallback.",
+        )
+    }
+    result = optimize_plan((candidate,), ceilings, constraints)
+    assert result.actions[0].quantity == 10
+    assert result.actions[0].output_units == 100
+
+    validation = validate_plan(result, constraints, ceilings, as_of=NOW)
+    assert validation.is_feasible
+    assert PlanReasonCode.QUANTITY_CEILING_EXCEEDED not in {
+        reason.code for reason in validation.reasons
+    }
+
+
 def test_final_market_freshness_is_advisory_not_a_restriction() -> None:
     constraints, ceilings, result = _fixture(market_age=timedelta(hours=5))
     validation = validate_plan(

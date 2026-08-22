@@ -25,6 +25,7 @@ from albion_crafter.planning import (
     TransportPolicy,
     optimize_plan,
 )
+from albion_crafter.planning.multicapacity import MultiCapacityLimits, optimize_multicapacity
 
 
 def _route(
@@ -284,6 +285,41 @@ def test_routes_and_focus_modes_share_output_market_capacity_for_selected_sale_m
     _assert_brute_force_parity(routes, ceilings, constraints)
     result = optimize_plan(routes, ceilings, constraints)
     assert sum(action.output_units for action in result.actions) <= 4
+
+
+def test_multicapacity_fallback_uses_action_units_instead_of_output_units() -> None:
+    candidate = _candidate(
+        "ten-output-batch",
+        cash=1,
+        nonfocus_profit=1,
+        output_quantity=10,
+    )
+    constraints = FindMoneyConstraints(
+        10,
+        0,
+        use_focus=False,
+        per_item_craft_cap=10,
+        history_enabled=True,
+    )
+    key = candidate.execution_capacity_key
+    ceilings = {
+        key: QuantityCeiling(
+            key,
+            10,
+            None,
+            QuantityCeilingSource.EXPLICIT_FALLBACK_NO_HISTORY,
+            explanation="No reliable history; use the explicit ten-batch fallback.",
+        )
+    }
+    built = optimize_multicapacity(
+        (candidate,),
+        ceilings,
+        constraints,
+        limits=MultiCapacityLimits(128, 10_000, 10_000),
+    )
+
+    assert built.result.actions[0].quantity == 10
+    assert built.result.actions[0].output_units == 100
 
 
 def test_zero_and_negative_profit_candidates_leave_the_plan_empty() -> None:

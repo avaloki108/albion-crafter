@@ -34,6 +34,7 @@ from .models import (
     quantize_resource_up,
 )
 from .preflight import EligibleRecipeRoute
+from .price_sanity import production_price_sanity_reasons
 
 LiquidityKey = tuple[Region, str, str, int]
 ProgressCallback = Callable[[int, int], None]
@@ -313,6 +314,20 @@ class PlanCandidateEvaluator:
                         PlanReasonSeverity.WARNING,
                     )
                 )
+            price_sanity_reasons = production_price_sanity_reasons(
+                liquidity,
+                roi=nonfocused_roi,
+                item_id=recipe.output.item_id,
+            )
+            reasons.extend(price_sanity_reasons)
+            if price_sanity_reasons:
+                # The suspect output quote affects both Focus modes. Do not let
+                # the existing non-Focus-only blocker escape hatch retain a
+                # focused version of the same uncorroborated opportunity.
+                focused_valid = False
+                focused_profit = None
+                focused_effective_cost = None
+                focus_cost = None
 
             evidence = _candidate_evidence(
                 eligible_route,
@@ -342,7 +357,7 @@ class PlanCandidateEvaluator:
                     station_cash=station_cash,
                     setup_cash=setup_cash,
                     nonfocused_eligible=not any(
-                        reason.severity is PlanReasonSeverity.BLOCKING for reason in general_reasons
+                        reason.severity is PlanReasonSeverity.BLOCKING for reason in reasons
                     ),
                 ),
                 action_kind=recipe.action_kind,
@@ -359,10 +374,7 @@ class PlanCandidateEvaluator:
             )
             candidates.append(candidate)
 
-            if (
-                not candidate.economics.nonfocused_eligible
-                and not candidate.economics.has_focused_variant
-            ):
+            if candidate.has_blocker:
                 near_misses.append(
                     _near_miss(candidate_id, eligible_route, nonfocused.profit, candidate.reasons)
                 )

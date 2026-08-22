@@ -136,7 +136,7 @@ def optimize_multicapacity(
                     if choice is None:
                         next_frontier.append(prior)
                     else:
-                        combined = _combine(prior, choice)
+                        combined = _combine(prior, choice, ceilings)
                         if (
                             combined.cash <= constraints.silver_budget
                             and combined.focus <= constraints.focus_budget
@@ -389,12 +389,18 @@ def _component_order(
     return (-best_profit, cash, canonical)
 
 
-def _combine(prior: _State, allocation: CandidateAllocation) -> _State:
+def _combine(
+    prior: _State,
+    allocation: CandidateAllocation,
+    ceilings: Mapping[ExecutionCapacityKey, QuantityCeiling],
+) -> _State:
     usage = dict(prior.capacity)
     for requirement in allocation.candidate.capacity_requirements:
-        usage[requirement.key] = usage.get(requirement.key, 0) + (
-            allocation.total_crafts * requirement.units_per_action_unit
-        )
+        ceiling = ceilings[requirement.key]
+        consumed = allocation.total_crafts
+        if ceiling.maximum_output_units is not None:
+            consumed *= requirement.units_per_action_unit
+        usage[requirement.key] = usage.get(requirement.key, 0) + (consumed)
     return _State(
         (*prior.allocations, allocation),
         prior.cash + allocation.pre_revenue_cash,

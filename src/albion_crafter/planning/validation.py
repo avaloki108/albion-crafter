@@ -124,16 +124,24 @@ def validate_plan(
     units_by_key: dict[ExecutionCapacityKey, int] = defaultdict(int)
     for action in actions:
         key = action.execution_capacity_key
-        for requirement_key, units in action.capacity_consumption:
-            units_by_key[requirement_key] += units
-            if requirement_key not in ceilings:
+        for requirement in action.capacity_requirements:
+            requirement_ceiling = ceilings.get(requirement.key)
+            if requirement_ceiling is None:
                 reasons.append(
                     PlanReason(
                         PlanReasonCode.QUANTITY_CEILING_EXCEEDED,
-                        f"No shared capacity ceiling exists for {requirement_key[1]} in "
-                        f"{requirement_key[2]} used by {action.candidate_id}.",
+                        f"No shared capacity ceiling exists for {requirement.key[1]} in "
+                        f"{requirement.key[2]} used by {action.candidate_id}.",
                     )
                 )
+                continue
+            # Historical ceilings are market-item units.  When history is
+            # unavailable, the explicit fallback is deliberately an action-unit
+            # or production-batch cap, independent of recipe output quantity.
+            consumed = action.quantity
+            if requirement_ceiling.maximum_output_units is not None:
+                consumed *= requirement.units_per_action_unit
+            units_by_key[requirement.key] += consumed
         reasons.extend(_validate_capacity_evidence(action, ceilings))
         if action.action_kind not in constraints.action_kinds:
             reasons.append(
@@ -312,15 +320,17 @@ def validate_plan(
         if ceiling is None:
             continue
         unit_cap = ceiling.maximum_output_units
+        unit_label = "market units"
         if unit_cap is None:
             unit_cap = ceiling.maximum_crafts
+            unit_label = "action units/batches"
         if units > unit_cap:
             reasons.append(
                 PlanReason(
                     PlanReasonCode.QUANTITY_CEILING_EXCEEDED,
                     f"Shared capacity {key[1]} in {key[2]} plans "
-                    f"{units:,} market units; the conservative execution ceiling is "
-                    f"{unit_cap:,}.",
+                    f"{units:,} {unit_label}; the conservative execution ceiling is "
+                    f"{unit_cap:,} {unit_label}.",
                 )
             )
 

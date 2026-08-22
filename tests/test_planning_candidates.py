@@ -16,7 +16,7 @@ from albion_crafter.core.models import Item, MaterialRequirement, Recipe
 from albion_crafter.core.provenance import Provenance
 from albion_crafter.core.stations import StationFeeObservation, StationType
 from albion_crafter.market.history import HistoryTimeScale, MarketHistoryInterval
-from albion_crafter.market.liquidity import LiquidityLevel
+from albion_crafter.market.liquidity import LiquidityAssessment, LiquidityLevel
 from albion_crafter.market.models import MarketPrice, Region
 from albion_crafter.planning.candidates import (
     CandidateMode,
@@ -32,6 +32,7 @@ from albion_crafter.planning.models import (
     FindMoneyConstraints,
     OptimizationStatus,
     PlanCandidate,
+    PlanReasonCode,
     TransportPolicy,
     quantize_profit_down,
 )
@@ -242,6 +243,54 @@ def test_stale_price_is_latest_available_and_does_not_reject_candidate() -> None
     assert result.candidates[0].economics.has_focused_variant
     assert not result.near_misses
     assert dict(result.rejection_counts).get("stale_market_data", 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("weighted_mean", "deviation", "output_price"),
+    (
+        (2_500.0, 9.0, 25_000),
+        (None, None, 50_000),
+    ),
+)
+def test_extreme_optimistic_output_quote_requires_in_game_verification(
+    weighted_mean: float | None,
+    deviation: float | None,
+    output_price: int,
+) -> None:
+    eligible, profile = _eligible()
+    key = (Region.AMERICAS, "T4_MAIN_SWORD", "Bridgewatch", 1)
+    liquidity = LiquidityAssessment(
+        LiquidityLevel.LOW if weighted_mean is not None else LiquidityLevel.UNKNOWN,
+        100 if weighted_mean is not None else 0,
+        4 if weighted_mean is not None else 0,
+        weighted_mean,
+        deviation,
+        float(output_price),
+        NOW if weighted_mean is not None else None,
+        weighted_mean,
+        weighted_mean,
+        (),
+    )
+    result = PlanCandidateEvaluator().evaluate(
+        (eligible,),
+        (
+            _price("T4_METALBAR", "Bridgewatch", 100),
+            _price("T4_MAIN_SWORD", "Bridgewatch", output_price),
+        ),
+        (),
+        profile,
+        _constraints(history_enabled=True),
+        liquidity_by_key={key: liquidity},
+        as_of=NOW,
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.has_blocker
+    assert not candidate.economics.nonfocused_eligible
+    assert not candidate.economics.has_focused_variant
+    assert PlanReasonCode.EXTREME_MARKET_OUTLIER in {reason.code for reason in candidate.reasons}
+    assert result.near_misses[0].item_id == "T4_MAIN_SWORD"
+    assert dict(result.rejection_counts)["extreme_market_outlier"] == 1
 
 
 def test_missing_current_sell_uses_cached_daily_history_in_planning() -> None:

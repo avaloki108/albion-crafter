@@ -1990,20 +1990,28 @@ class FindMoneyView(QWidget):
                 "large route-level near-miss set. Refresh & Replan to inspect current exclusions."
             )
         else:
-            headline = (
-                (
-                    "BEST PLAN · "
-                    f"{snapshot.plan_status.value.replace('_', ' ').title()} · "
+            if snapshot.plan_status is PlanStatus.NON_ACTIONABLE:
+                headline = (
+                    "DO NOT EXECUTE · This result contains blocking evidence failures. "
+                    "Use the reasons below, refresh, and replan."
+                )
+            elif snapshot.plan_status is PlanStatus.ADVISORY:
+                headline = (
+                    "BEST PLAN · VERIFY BEFORE ACTING · Advisory · "
                     f"{snapshot.optimizer.status.value.title()} optimization"
                 )
-                if snapshot.actions and self._simple_run_requested
-                else (
-                    f"PLAN STATUS: {snapshot.plan_status.value.replace('_', ' ').title()} · "
-                    f"Optimization: {snapshot.optimizer.status.value.title()} · generated now."
-                    if snapshot.actions
-                    else "No profitable action is ready yet."
+            elif snapshot.actions and self._simple_run_requested:
+                headline = (
+                    "BEST PLAN · Decision Grade · "
+                    f"{snapshot.optimizer.status.value.title()} optimization"
                 )
-            )
+            elif snapshot.actions:
+                headline = (
+                    "PLAN STATUS: Decision Grade · "
+                    f"Optimization: {snapshot.optimizer.status.value.title()} · generated now."
+                )
+            else:
+                headline = "No profitable action is ready yet."
             freshness = "fresh" if snapshot.plan_status.value == "decision_grade" else "aging"
         self.plan_banner.setText(headline)
         self._repolish(self.plan_banner, freshness)
@@ -2025,7 +2033,8 @@ class FindMoneyView(QWidget):
                 )
                 action_lines.extend(
                     (
-                        f"{index}. {action.action_kind.value.upper()} — {action.display_name}",
+                        f"{index}. {action.action_kind.value.upper()} — "
+                        f"{self._action_identity(action)}",
                         f"   {route}",
                         f"   {action.quantity:,} action units/batches · cash needed "
                         f"{money(action.pre_revenue_cash_required)} · expected profit "
@@ -2285,7 +2294,7 @@ class FindMoneyView(QWidget):
             actionability = self._actionability(action, snapshot)
             values: tuple[tuple[str, float | str | None], ...] = (
                 (action.action_kind.value.title(), action.action_kind.value),
-                (action.display_name, action.display_name),
+                (self._action_identity(action), action.display_name),
                 (f"{action.quantity:,}", action.quantity),
                 (f"{action.focused_quantity:,}", action.focused_quantity),
                 (f"{action.nonfocused_quantity:,}", action.nonfocused_quantity),
@@ -2337,6 +2346,16 @@ class FindMoneyView(QWidget):
             return "Advisory"
         return "Decision-grade"
 
+    def _action_identity(self, action: PlanAction) -> str:
+        recipe = self._evidence_object(action, "recipe")
+        enchantment = recipe.get("enchantment")
+        enchantment_text = (
+            f".{enchantment}"
+            if isinstance(enchantment, int) and not isinstance(enchantment, bool) and enchantment
+            else ""
+        )
+        return f"{action.display_name}{enchantment_text} · {action.item_id}"
+
     def _show_selected_action(self) -> None:
         snapshot = self.displayed_snapshot
         selected = self.action_table.selectedItems()
@@ -2377,7 +2396,7 @@ class FindMoneyView(QWidget):
         action_label = action.action_kind.value.upper()
         production_verb = "REFINE" if action.action_kind is ActionKind.REFINE else "CRAFT"
         lines = [
-            f"{action_label} — {action.display_name}",
+            f"{action_label} — {self._action_identity(action)}",
             "",
             "BUY",
             action.route.material_city,
@@ -2412,7 +2431,7 @@ class FindMoneyView(QWidget):
                 "SELL",
                 action.route.sell_city,
                 action.sale_method.value.replace("_", " ").title(),
-                f"Expected output: {action.output_units:,} × {action.display_name}",
+                f"Expected output: {action.output_units:,} × {self._action_identity(action)}",
                 "",
                 "EXPECTED",
                 f"Pre-revenue silver: {money(action.pre_revenue_cash_required)}",

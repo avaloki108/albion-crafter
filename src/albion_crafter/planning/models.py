@@ -109,6 +109,7 @@ class PlanReasonSeverity(StrEnum):
 class PlanReasonCode(StrEnum):
     APPROXIMATE_OPTIMIZATION = "approximate_optimization"
     CANCELLED = "cancelled"
+    EXTREME_MARKET_OUTLIER = "extreme_market_outlier"
     INSUFFICIENT_FOCUS = "insufficient_focus"
     INSUFFICIENT_SILVER = "insufficient_silver"
     FUTURE_MARKET_DATA = "future_market_data"

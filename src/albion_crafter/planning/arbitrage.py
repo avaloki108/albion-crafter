@@ -29,6 +29,7 @@ from .models import (
     quantize_resource_up,
 )
 from .preflight import EligibleArbitrageRoute
+from .price_sanity import arbitrage_price_sanity_reasons
 
 LiquidityKey = tuple[Region, str, str, int]
 ProgressCallback = Callable[[int, int], None]
@@ -229,6 +230,14 @@ class ArbitrageCandidateEvaluator:
             purchase = quantize_resource_up(economics.purchase_cash)
             setup = quantize_resource_up(economics.setup_cash)
             transport = quantize_resource_up(economics.transport_cash)
+            reasons.extend(
+                arbitrage_price_sanity_reasons(
+                    source_liquidity,
+                    destination_liquidity,
+                    roi=economics.roi,
+                    item_id=item.item_id,
+                )
+            )
             candidate = PlanCandidate(
                 candidate_id,
                 item.item_id,
