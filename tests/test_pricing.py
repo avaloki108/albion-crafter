@@ -228,3 +228,40 @@ def test_missing_output_and_material_sides_remain_visible(tmp_path) -> None:
     assert snapshot.material_prices == {"MAT": None}
     assert snapshot.output_price is None
     assert len(snapshot.resolved_prices) == 2
+
+
+def test_standalone_item_resolution_uses_the_same_current_price_policy(tmp_path) -> None:
+    database = Database(tmp_path / "standalone-item.db")
+    database.initialize()
+    prices = MarketPriceRepository(database)
+    now = datetime.now(UTC)
+    prices.upsert_many(
+        [
+            MarketPrice(
+                item_id="T4_MAIN_SWORD",
+                city="Bridgewatch",
+                quality=3,
+                region=Region.AMERICAS,
+                sell_price=12_345,
+                sell_price_timestamp=now,
+                buy_price=10_000,
+                buy_price_timestamp=now,
+                fetched_at=now,
+            )
+        ]
+    )
+
+    resolved = PriceResolver(prices).resolve_item(
+        "T4_MAIN_SWORD",
+        city="Bridgewatch",
+        quality=3,
+        region=Region.AMERICAS,
+        side=MarketSide.SELL_ORDER,
+        freshness_policy=FreshnessPolicy(timedelta(hours=4)),
+        as_of=now,
+        role="loadout:main_hand",
+    )
+
+    assert resolved.price == 12_345
+    assert resolved.role == "loadout:main_hand"
+    assert resolved.freshness is Freshness.FRESH

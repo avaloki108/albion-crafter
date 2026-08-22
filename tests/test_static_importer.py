@@ -134,6 +134,12 @@ def test_static_import_is_real_schema_aware_cached_and_idempotent(tmp_path) -> N
     assert enchanted.materials[0].item_id == "T4_BAR_LEVEL1@1"
     assert enchanted.item_value == 160
     assert repository.search_recipes("Test Sword", enchantment=1)[0].item_id == "T4_SWORD@1"
+    assert [
+        item.item_id
+        for item in repository.search_items("Test Sword", categories=("weapons",))
+    ] == ["T4_SWORD", "T4_SWORD@1"]
+    assert repository.search_items("Test Sword", categories=("offhands",)) == []
+    assert repository.search_items("Test Sword", categories=("weapons",), limit=0) == []
 
 
 def test_acid_potion_item_value_is_derived_without_nonreturnable_catalyst(tmp_path) -> None:
