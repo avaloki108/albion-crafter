@@ -81,7 +81,9 @@ filters.
    gaps, history-capacity keys, component/work estimates, and current AODP request batches.
 2. Explicit current refresh requests only required old/missing keys. Complete batches persist
    independently after a later failure or cancellation; if no newer observation is available, the
-   latest saved nonzero price remains usable with its original timestamp.
+   latest saved nonzero price remains usable with its original timestamp. Exact sparse keys sharing
+   the same city set are combined into multi-city AODP calls. Repeated connection failures stop the
+   remaining current/history requests and planning continues from retained evidence.
 3. Initial evaluation computes production modes and fee-aware one-unit arbitrage economics.
 4. Safe preprocessing removes only proven dominated/equivalent routes with identical capacity
    semantics.
@@ -95,7 +97,11 @@ filters.
 
 One aware UTC `as_of` value is used per phase. Large route, graph, evaluation, shortlist,
 optimization, validation, and UI loops contain cancellation checks. Repository reads are bulked;
-there is no SQL or HTTP request per candidate.
+there is no SQL or HTTP request per candidate. Simple Mode shows exact network batch progress and a
+visible Cancel control for the duration of the run. Its interactive optimizer uses a smaller named
+work bound so a broad blank search returns a feasible, explicitly Approximate allocation instead of
+spending minutes proving a marginally better portfolio. Advanced Mode retains the larger default
+work bounds.
 
 ## Exact current-price policy
 
@@ -159,6 +165,9 @@ Candidates and capacity keys form a bipartite graph. Capacity-connected candidat
 together so no route can reserve a shared source/destination independently. Each component builds
 a Pareto frontier over cash, Focus, profit, capacity use, liquidity, and deterministic signature.
 Component frontiers then combine under the one global bankroll and Focus budget.
+The capacity-free global merge uses an indexed cash/Focus dominance frontier rather than a
+quadratic pairwise scan. If a named transition limit is reached, the best completed components are
+retained; unfinished work can no longer erase an already feasible allocation.
 
 The primary objective is expected profit, followed deterministically by lower cash, lower Focus,
 stronger minimum liquidity, fewer actions, and canonical signature. Revenue and returned resources

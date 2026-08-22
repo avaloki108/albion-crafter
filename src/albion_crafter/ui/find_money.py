@@ -59,6 +59,7 @@ from albion_crafter.planning.models import (
     PlanStatus,
     TransportPolicy,
 )
+from albion_crafter.planning.optimizer import OptimizerLimits
 from albion_crafter.planning.preflight import (
     FindMoneyPreflight,
     PriceRequirementAssessment,
@@ -76,6 +77,11 @@ from .find_money_worker import FindMoneyWorker, PlanningCancellationToken
 
 ServiceFactory = Callable[[Region], FindMoneyService]
 MAX_INLINE_PRICE_OVERRIDES = 10
+SIMPLE_MODE_OPTIMIZER_LIMITS = OptimizerLimits(
+    max_states=128,
+    max_quantity_transitions=100_000,
+    max_portfolio_transitions=100_000,
+)
 
 
 class TrustPreset(StrEnum):
@@ -477,14 +483,15 @@ class FindMoneyView(QWidget):
         self.run_button.setObjectName("findMoneyRunButton")
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self.start_plan)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(self.cancel_plan)
         buttons.addWidget(self.preflight_button)
         buttons.addWidget(self.run_button)
-        buttons.addWidget(self.cancel_button)
         buttons.addStretch(1)
         root.addWidget(self.advanced_run_controls)
+        self.cancel_button = QPushButton("CANCEL CURRENT RUN")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setVisible(False)
+        self.cancel_button.clicked.connect(self.cancel_plan)
+        root.addWidget(self.cancel_button)
 
         self.status = QLabel("Ready. No Find Me Money preflight, scan, or network request has run.")
         self.status.setObjectName("dataBanner")
@@ -1652,6 +1659,9 @@ class FindMoneyView(QWidget):
             refresh_current=True,
             refresh_history=self.preflight.constraints.history_enabled,
             cancellation=cancellation,
+            optimizer_limits=(
+                None if self.advanced_toggle.isChecked() else SIMPLE_MODE_OPTIMIZER_LIMITS
+            ),
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -1732,7 +1742,10 @@ class FindMoneyView(QWidget):
             PlanningStage.CANCELLED: "Cancelled safely",
         }
         message = (
-            value.message if self.advanced_toggle.isChecked() else simple_messages[value.stage]
+            value.message
+            if self.advanced_toggle.isChecked()
+            or value.stage in {PlanningStage.CURRENT_REFRESH, PlanningStage.HISTORY_REFRESH}
+            else simple_messages[value.stage]
         )
         self.stage_label.setText(
             f"{value.stage.value.replace('_', ' ').title()} · {message}"
@@ -1947,6 +1960,7 @@ class FindMoneyView(QWidget):
         self.station_setup.setEnabled(not running)
         self.price_setup.setEnabled(not running)
         self.cancel_button.setEnabled(running)
+        self.cancel_button.setVisible(running)
 
     def _preflight_can_run(self) -> bool:
         if self.preflight is None or not self.preflight.has_eligible_routes:

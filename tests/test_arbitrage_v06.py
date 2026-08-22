@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -32,6 +33,7 @@ from albion_crafter.database.v3 import (
 from albion_crafter.market.history import HistoryTimeScale, MarketHistoryInterval
 from albion_crafter.market.liquidity import LiquidityLevel
 from albion_crafter.market.models import MarketPrice, MarketSide, Region
+from albion_crafter.planning import multicapacity as multicapacity_module
 from albion_crafter.planning.arbitrage import ArbitrageCandidateEvaluator
 from albion_crafter.planning.export import export_plan_csv
 from albion_crafter.planning.models import (
@@ -63,6 +65,37 @@ from albion_crafter.planning.validation import (
 )
 
 NOW = datetime(2026, 8, 19, 12, tzinfo=UTC)
+
+
+def _pairwise_resource_pareto(states):
+    unique = {}
+    for state in states:
+        key = (state.cash, state.focus, state.profit)
+        existing = unique.get(key)
+        if existing is None or multicapacity_module._tie(state) < multicapacity_module._tie(
+            existing
+        ):
+            unique[key] = state
+    retained = []
+    for state in sorted(
+        unique.values(),
+        key=lambda value: multicapacity_module._frontier_order(value, False),
+    ):
+        if any(
+            multicapacity_module._dominates(prior, state, include_capacity=False)
+            for prior in retained
+        ):
+            continue
+        retained = [
+            prior
+            for prior in retained
+            if not multicapacity_module._dominates(state, prior, include_capacity=False)
+        ]
+        retained.append(state)
+    return sorted(
+        retained,
+        key=lambda value: multicapacity_module._frontier_order(value, False),
+    )
 
 
 def _constraints(**changes) -> FindMoneyConstraints:
@@ -692,6 +725,83 @@ def test_multicapacity_quantity_bound_is_feasible_and_never_labeled_exact() -> N
     assert "candidate_quantity_state_limit" in result.diagnostics.approximation_reasons
     assert result.total_pre_revenue_cash <= constraints.silver_budget
     assert all(action.quantity <= 1_000 for action in result.actions)
+
+
+def test_indexed_multicapacity_resource_pareto_matches_pairwise_reference() -> None:
+    randomizer = random.Random(20260821)
+    for fixture in range(8):
+        states = [
+            multicapacity_module._State(
+                (),
+                randomizer.randint(0, 80),
+                randomizer.randint(0, 25),
+                randomizer.randint(-20, 180),
+                (),
+                randomizer.randint(0, 4),
+                ((f"{fixture}-{index}", 0, 1),),
+            )
+            for index in range(240)
+        ]
+
+        assert multicapacity_module._pareto(
+            states,
+            include_capacity=False,
+        ) == _pairwise_resource_pareto(states)
+
+
+def test_multicapacity_quantity_limit_keeps_best_completed_component() -> None:
+    candidates = []
+    ceilings = {}
+    for index, profit in enumerate((10, 20, 30)):
+        item_id = f"ITEM_{index}"
+        source_city = f"Source {index}"
+        destination_city = f"Destination {index}"
+        source = (Region.AMERICAS, item_id, source_city, 1)
+        destination = (Region.AMERICAS, item_id, destination_city, 1)
+        ceilings[source] = _ceiling(source, 1)
+        ceilings[destination] = _ceiling(destination, 1)
+        candidates.append(
+            _candidate(
+                f"candidate-{index}",
+                action_kind=ActionKind.ARBITRAGE,
+                route=CandidateRoute(
+                    Region.AMERICAS,
+                    source_city,
+                    source_city,
+                    destination_city,
+                    TransportPolicy.ACKNOWLEDGED_UNCOSTED,
+                ),
+                profit=profit,
+                requirements=(
+                    CapacityRequirement(source, CapacityRole.ACQUISITION, 1),
+                    CapacityRequirement(destination, CapacityRole.LIQUIDATION, 1),
+                ),
+                item_id=item_id,
+            )
+        )
+
+    result = PlanningOptimizer().optimize(
+        tuple(candidates),
+        ceilings,
+        _constraints(
+            available_silver=100,
+            per_item_craft_cap=1,
+            transport_policy=TransportPolicy.ACKNOWLEDGED_UNCOSTED,
+            transport_cost_per_craft=None,
+        ),
+        limits=OptimizerLimits(
+            max_states=10,
+            max_quantity_transitions=2,
+            max_portfolio_transitions=10,
+        ),
+    )
+
+    assert result.diagnostics.status is OptimizationStatus.APPROXIMATE
+    assert "quantity_transition_limit" in result.diagnostics.approximation_reasons
+    assert [(action.candidate_id, action.quantity) for action in result.actions] == [
+        ("candidate-2", 1)
+    ]
+    assert result.total_expected_profit == 30
 
 
 def test_arbitrage_routes_share_source_and_destination_capacities() -> None:

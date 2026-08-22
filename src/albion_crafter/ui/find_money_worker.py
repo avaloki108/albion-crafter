@@ -4,6 +4,7 @@ from threading import Event
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from albion_crafter.planning.optimizer import OptimizerLimits
 from albion_crafter.planning.preflight import FindMoneyPreflight
 from albion_crafter.planning.service import FindMoneyRunResult, FindMoneyService
 
@@ -40,6 +41,7 @@ class FindMoneyWorker(QObject):
         refresh_current: bool = True,
         refresh_history: bool = True,
         cancellation: PlanningCancellationToken | None = None,
+        optimizer_limits: OptimizerLimits | None = None,
     ) -> None:
         super().__init__()
         self.service = service
@@ -47,6 +49,7 @@ class FindMoneyWorker(QObject):
         self.refresh_current = refresh_current
         self.refresh_history = refresh_history
         self.cancellation = cancellation or PlanningCancellationToken()
+        self.optimizer_limits = optimizer_limits
 
     @Slot()
     def cancel(self) -> None:
@@ -55,12 +58,16 @@ class FindMoneyWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+            options = {}
+            if self.optimizer_limits is not None:
+                options["optimizer_limits"] = self.optimizer_limits
             result: FindMoneyRunResult = self.service.execute(
                 self.preflight,
                 refresh_current=self.refresh_current,
                 refresh_history=self.refresh_history,
                 cancelled=self.cancellation.is_cancelled,
                 progress=self.progress.emit,
+                **options,
             )
         except Exception as error:  # Qt boundary reports failures on the GUI thread.
             self.error.emit(f"{type(error).__name__}: {error}")

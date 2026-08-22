@@ -180,6 +180,52 @@ def test_sparse_refresh_keeps_successes_and_continues_after_one_batch_failure(tm
     assert repository.get("THREE", "Thetford", 1, Region.AMERICAS) is not None
 
 
+def test_sparse_refresh_stops_after_repeated_endpoint_failures_and_skips_history(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "circuit-current.db")
+    database.initialize()
+    repository = MarketPriceRepository(database)
+    keys = (
+        MarketKey(Region.AMERICAS, "ONE", "Bridgewatch", 1),
+        MarketKey(Region.AMERICAS, "TWO", "Martlock", 1),
+        MarketKey(Region.AMERICAS, "THREE", "Thetford", 1),
+    )
+    requested: list[tuple[tuple[str, ...], str, int]] = []
+
+    def transport(url: str, _timeout: float) -> bytes:
+        requested.append(_request_identity(url))
+        raise URLError("endpoint offline")
+
+    class UnexpectedBackfill:
+        def refresh_missing(self, *_args, **_kwargs):
+            raise AssertionError("history must not start after the current endpoint circuit opens")
+
+    result = CurrentMarketRefreshExecutor(
+        repository,
+        client_factory=lambda region: AODPClient(
+            region,
+            transport=transport,
+            retry_backoff_seconds=0,
+            wall_clock=lambda: NOW,
+        ),
+        history_backfill=UnexpectedBackfill(),  # type: ignore[arg-type]
+    ).execute(_refresh_plan(keys))
+
+    assert [identity[1] for identity in requested] == [
+        "Bridgewatch",
+        "Bridgewatch",
+        "Martlock",
+        "Martlock",
+    ]
+    assert result.circuit_breaker_open
+    assert result.groups_planned == 3
+    assert result.groups_completed == 2
+    assert result.groups_skipped == 1
+    assert result.batches_completed == result.batches_failed == 2
+    assert result.records_loaded == 0
+
+
 def test_sparse_refresh_cancels_between_exact_groups(tmp_path) -> None:
     database = Database(tmp_path / "cancel-plan-current.db")
     database.initialize()
@@ -237,8 +283,17 @@ def test_sparse_refresh_automatically_backfills_only_required_sell_sides(tmp_pat
     class RecordingBackfill:
         calls = []
 
-        def refresh_missing(self, region, item_ids, cities, *, quality, is_cancelled):
-            self.calls.append((region, item_ids, cities, quality, is_cancelled))
+        def refresh_missing(
+            self,
+            region,
+            item_ids,
+            cities,
+            *,
+            quality,
+            is_cancelled,
+            on_progress,
+        ):
+            self.calls.append((region, item_ids, cities, quality, is_cancelled, on_progress))
             key = (item_ids[0], cities[0], quality)
             return MissingSellHistoryBackfillResult((key,), (key,), (), ())
 
@@ -309,3 +364,27 @@ def test_default_preflight_batch_estimates_match_public_aodp_plan() -> None:
     )
     assert max(batch.url_length_bytes for batch in planned) == public.max_url_bytes
     assert public.max_url_bytes <= 3_900
+
+
+def test_default_preflight_combines_only_cities_with_identical_item_sets() -> None:
+    keys = (
+        MarketKey(Region.AMERICAS, "ONE", "Bridgewatch", 1),
+        MarketKey(Region.AMERICAS, "TWO", "Bridgewatch", 1),
+        MarketKey(Region.AMERICAS, "ONE", "Martlock", 1),
+        MarketKey(Region.AMERICAS, "TWO", "Martlock", 1),
+        MarketKey(Region.AMERICAS, "THREE", "Thetford", 1),
+    )
+
+    planned = _default_batch_planner(keys)
+
+    assert len(planned) == 2
+    combined = next(batch for batch in planned if len(batch.request_cities) == 2)
+    assert combined.request_cities == ("Bridgewatch", "Martlock")
+    assert combined.item_ids == ("ONE", "TWO")
+    actual = {
+        MarketKey(batch.region, item_id, city, batch.quality)
+        for batch in planned
+        for city in batch.request_cities
+        for item_id in batch.item_ids
+    }
+    assert actual == set(keys)

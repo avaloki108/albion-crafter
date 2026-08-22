@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -87,7 +88,12 @@ def optimize_multicapacity(
         raise ValueError("planning candidate region must match constraints")
     if any(ceilings[key].execution_capacity_key != key for key in ceilings):
         raise ValueError("quantity ceiling mapping key does not match its value")
-    components = _connected_components(ordered, cancelled=cancelled)
+    components = tuple(
+        sorted(
+            _connected_components(ordered, cancelled=cancelled),
+            key=lambda value: _component_order(value, constraints),
+        )
+    )
     approximate_reasons: set[str] = set()
     transitions = 0
     pruned = 0
@@ -99,6 +105,7 @@ def optimize_multicapacity(
         max(limits.max_states * 4, 512),
     )
 
+    quantity_limit_hit = False
     for component in components:
         frontier = [_State.empty()]
         for candidate in component:
@@ -124,6 +131,7 @@ def optimize_multicapacity(
                         _check_cancelled(cancelled)
                     if transitions > limits.max_quantity_transitions:
                         approximate_reasons.add("quantity_transition_limit")
+                        quantity_limit_hit = True
                         break
                     if choice is None:
                         next_frontier.append(prior)
@@ -148,18 +156,19 @@ def optimize_multicapacity(
                             )
                             approximate_reasons.add("component_frontier_state_limit")
                         next_frontier = compacted
-                if transitions > limits.max_quantity_transitions:
+                if quantity_limit_hit:
                     break
-            peak = max(peak, len(next_frontier))
-            reduced = _pareto(next_frontier, include_capacity=True)
-            pruned += len(next_frontier) - len(reduced)
-            peak = max(peak, len(reduced))
-            if len(reduced) > limits.max_states:
-                pruned += len(reduced) - limits.max_states
-                reduced = _bounded(reduced, limits.max_states, include_capacity=True)
-                approximate_reasons.add("component_frontier_state_limit")
-            frontier = reduced
-            if transitions > limits.max_quantity_transitions:
+            if next_frontier:
+                peak = max(peak, len(next_frontier))
+                reduced = _pareto(next_frontier, include_capacity=True)
+                pruned += len(next_frontier) - len(reduced)
+                peak = max(peak, len(reduced))
+                if len(reduced) > limits.max_states:
+                    pruned += len(reduced) - limits.max_states
+                    reduced = _bounded(reduced, limits.max_states, include_capacity=True)
+                    approximate_reasons.add("component_frontier_state_limit")
+                frontier = reduced
+            if quantity_limit_hit:
                 break
         final_component = _pareto(frontier, include_capacity=False)
         if len(final_component) > limits.max_states:
@@ -171,9 +180,12 @@ def optimize_multicapacity(
             )
             approximate_reasons.add("component_frontier_state_limit")
         component_frontiers.append(final_component)
+        if quantity_limit_hit:
+            break
 
     global_frontier = [_State.empty()]
     portfolio_transitions = 0
+    portfolio_limit_hit = False
     for component in component_frontiers:
         _check_cancelled(cancelled)
         combined_states: list[_State] = []
@@ -188,6 +200,7 @@ def optimize_multicapacity(
                     combined_states.append(merged)
                 if portfolio_transitions > limits.max_portfolio_transitions:
                     approximate_reasons.add("portfolio_transition_limit")
+                    portfolio_limit_hit = True
                     break
             if len(combined_states) >= compaction_threshold:
                 compacted = _pareto(combined_states, include_capacity=False)
@@ -202,17 +215,20 @@ def optimize_multicapacity(
                     )
                     approximate_reasons.add("portfolio_frontier_state_limit")
                 combined_states = compacted
-            if portfolio_transitions > limits.max_portfolio_transitions:
+            if portfolio_limit_hit:
                 break
-        peak = max(peak, len(combined_states))
-        reduced = _pareto(combined_states, include_capacity=False)
-        pruned += len(combined_states) - len(reduced)
-        peak = max(peak, len(reduced))
-        if len(reduced) > limits.max_states:
-            pruned += len(reduced) - limits.max_states
-            reduced = _bounded(reduced, limits.max_states, include_capacity=False)
-            approximate_reasons.add("portfolio_frontier_state_limit")
-        global_frontier = reduced or [_State.empty()]
+        if combined_states:
+            peak = max(peak, len(combined_states))
+            reduced = _pareto(combined_states, include_capacity=False)
+            pruned += len(combined_states) - len(reduced)
+            peak = max(peak, len(reduced))
+            if len(reduced) > limits.max_states:
+                pruned += len(reduced) - limits.max_states
+                reduced = _bounded(reduced, limits.max_states, include_capacity=False)
+                approximate_reasons.add("portfolio_frontier_state_limit")
+            global_frontier = reduced
+        if portfolio_limit_hit:
+            break
 
     best = min(global_frontier, key=_objective)
     actions = tuple(
@@ -330,6 +346,49 @@ def _connected_components(
     )
 
 
+def _component_order(
+    component: tuple[PlanCandidate, ...],
+    constraints: FindMoneyConstraints,
+) -> tuple:
+    """Put the strongest affordable components first for bounded searches."""
+
+    affordable: list[tuple[int, int, tuple]] = []
+    for candidate in component:
+        economics = candidate.economics
+        if (
+            economics.nonfocused_eligible
+            and economics.pre_revenue_cash_per_craft <= constraints.silver_budget
+        ):
+            affordable.append(
+                (
+                    economics.nonfocused_profit_per_craft,
+                    economics.pre_revenue_cash_per_craft,
+                    candidate.canonical_key,
+                )
+            )
+        if (
+            constraints.focus_budget
+            and economics.focused_profit_per_craft is not None
+            and economics.focus_per_focused_craft is not None
+            and economics.focus_per_focused_craft <= constraints.focus_budget
+            and economics.pre_revenue_cash_per_craft <= constraints.silver_budget
+        ):
+            affordable.append(
+                (
+                    economics.focused_profit_per_craft,
+                    economics.pre_revenue_cash_per_craft,
+                    candidate.canonical_key,
+                )
+            )
+    if not affordable:
+        return (0, 0, tuple(candidate.canonical_key for candidate in component))
+    best_profit, cash, canonical = min(
+        affordable,
+        key=lambda value: (-value[0], value[1], value[2]),
+    )
+    return (-best_profit, cash, canonical)
+
+
 def _combine(prior: _State, allocation: CandidateAllocation) -> _State:
     usage = dict(prior.capacity)
     for requirement in allocation.candidate.capacity_requirements:
@@ -375,6 +434,9 @@ def _capacity_limit(ceiling: QuantityCeiling) -> int:
 
 
 def _pareto(states: list[_State], *, include_capacity: bool) -> list[_State]:
+    if not include_capacity:
+        return _resource_pareto(states)
+
     unique: dict[tuple, _State] = {}
     for state in states:
         key = (
@@ -397,6 +459,54 @@ def _pareto(states: list[_State], *, include_capacity: bool) -> list[_State]:
         ]
         retained.append(state)
     return sorted(retained, key=lambda value: _frontier_order(value, include_capacity))
+
+
+def _resource_pareto(states: list[_State]) -> list[_State]:
+    """Prune the shared cash/Focus frontier in O(n log n).
+
+    Capacity-connected components have already been solved before this path is
+    used.  The old pairwise scan made the global portfolio merge quadratic at
+    every one of thousands of disconnected market components, which could
+    leave a broad Find Me Money search apparently frozen for minutes.
+    """
+
+    unique: dict[tuple[int, int, int], _State] = {}
+    for state in states:
+        key = (state.cash, state.focus, state.profit)
+        existing = unique.get(key)
+        if existing is None or _tie(state) < _tie(existing):
+            unique[key] = state
+
+    ordered = sorted(unique.values(), key=lambda value: _frontier_order(value, False))
+    focus_values = sorted({state.focus for state in ordered})
+    prefix_maximum: list[int | None] = [None] * (len(focus_values) + 1)
+    retained: list[_State] = []
+    for state in ordered:
+        focus_index = bisect_left(focus_values, state.focus) + 1
+        best_profit = _fenwick_query(prefix_maximum, focus_index)
+        if best_profit is not None and best_profit >= state.profit:
+            continue
+        retained.append(state)
+        _fenwick_update(prefix_maximum, focus_index, state.profit)
+    return retained
+
+
+def _fenwick_query(tree: list[int | None], index: int) -> int | None:
+    result: int | None = None
+    while index > 0:
+        value = tree[index]
+        if value is not None and (result is None or value > result):
+            result = value
+        index -= index & -index
+    return result
+
+
+def _fenwick_update(tree: list[int | None], index: int, value: int) -> None:
+    while index < len(tree):
+        existing = tree[index]
+        if existing is None or value > existing:
+            tree[index] = value
+        index += index & -index
 
 
 def _dominates(left: _State, right: _State, *, include_capacity: bool) -> bool:

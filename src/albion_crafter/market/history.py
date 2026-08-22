@@ -129,6 +129,7 @@ class HistoryFetchResult:
     cancelled: bool = False
     max_url_bytes: int = 0
     completed_item_ids: tuple[str, ...] = ()
+    circuit_breaker_open: bool = False
 
     @property
     def is_partial(self) -> bool:
@@ -193,6 +194,7 @@ class AODPHistoryClient:
         max_batches: int = DEFAULT_MAX_BATCHES,
         max_date_span_days: int = 31,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        max_consecutive_failures: int = 2,
         retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
         transport: Transport | None = None,
         clock: Clock = monotonic,
@@ -211,6 +213,12 @@ class AODPHistoryClient:
             raise ValueError("max_date_span_days must be positive")
         if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
             raise ValueError("max_retries cannot be negative")
+        if (
+            isinstance(max_consecutive_failures, bool)
+            or not isinstance(max_consecutive_failures, int)
+            or max_consecutive_failures < 1
+        ):
+            raise ValueError("max_consecutive_failures must be a positive integer")
         if not math.isfinite(retry_backoff_seconds) or retry_backoff_seconds < 0:
             raise ValueError("retry_backoff_seconds must be finite and non-negative")
         self.region = region
@@ -220,6 +228,7 @@ class AODPHistoryClient:
         self.max_batches = max_batches
         self.max_date_span_days = max_date_span_days
         self.max_retries = max_retries
+        self.max_consecutive_failures = max_consecutive_failures
         self.retry_backoff_seconds = retry_backoff_seconds
         self._transport = transport or _default_transport
         self._clock = clock
@@ -310,6 +319,8 @@ class AODPHistoryClient:
         completed_batches = 0
         completed_item_ids: list[str] = []
         cancelled = False
+        circuit_breaker_open = False
+        consecutive_failures = 0
         max_url_bytes = max((_url_length(url) for _, _, url in requests), default=0)
         for batch_number, batch, url in requests:
             if is_cancelled is not None and is_cancelled():
@@ -379,6 +390,13 @@ class AODPHistoryClient:
                         record_failures=tuple(invalid) if failure is None else (),
                     )
                 )
+            if failure is None:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= self.max_consecutive_failures:
+                    circuit_breaker_open = True
+                    break
 
         return HistoryFetchResult(
             intervals=tuple(intervals),
@@ -397,6 +415,7 @@ class AODPHistoryClient:
             cancelled=cancelled,
             max_url_bytes=max_url_bytes,
             completed_item_ids=tuple(completed_item_ids),
+            circuit_breaker_open=circuit_breaker_open,
         )
 
     def plan_history_batches(

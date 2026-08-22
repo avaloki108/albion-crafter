@@ -10,6 +10,7 @@ from albion_crafter.market.aodp import AODPClient, BatchFetchResult, Cancellatio
 from albion_crafter.market.backfill import (
     MissingSellHistoryBackfillResult,
     MissingSellHistoryBackfillService,
+    MissingSellHistoryProgress,
 )
 from albion_crafter.market.cache import CachedMarketService
 from albion_crafter.market.models import MarketSide, Region
@@ -19,6 +20,7 @@ from .preflight import MarketRefreshPlan, PlannedAODPBatch
 
 ClientFactory = Callable[[Region], AODPClient]
 ServiceFactory = Callable[[AODPClient, MarketPriceRepository], CachedMarketService]
+DEFAULT_MAX_CONSECUTIVE_GROUP_FAILURES = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +58,7 @@ class CurrentRefreshProgress:
 
 
 CurrentRefreshProgressCallback = Callable[[CurrentRefreshProgress], None]
+HistoryBackfillProgressCallback = Callable[[MissingSellHistoryProgress], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,9 @@ class CurrentRefreshResult:
     history_batches_planned: int = 0
     history_batches_failed: int = 0
     history_record_failures: int = 0
+    circuit_breaker_open: bool = False
+    groups_skipped: int = 0
+    history_circuit_breaker_open: bool = False
 
     @property
     def keys_requested(self) -> int:
@@ -140,12 +146,20 @@ class CurrentMarketRefreshExecutor:
         client_factory: ClientFactory = AODPClient,
         service_factory: ServiceFactory = CachedMarketService,
         history_backfill: MissingSellHistoryBackfillService | None = None,
+        max_consecutive_group_failures: int = DEFAULT_MAX_CONSECUTIVE_GROUP_FAILURES,
         clock: Clock = monotonic,
     ) -> None:
+        if (
+            isinstance(max_consecutive_group_failures, bool)
+            or not isinstance(max_consecutive_group_failures, int)
+            or max_consecutive_group_failures < 1
+        ):
+            raise ValueError("max_consecutive_group_failures must be a positive integer")
         self.repository = repository
         self.client_factory = client_factory
         self.service_factory = service_factory
         self.history_backfill = history_backfill
+        self.max_consecutive_group_failures = max_consecutive_group_failures
         self._clock = clock
 
     def execute(
@@ -154,6 +168,7 @@ class CurrentMarketRefreshExecutor:
         *,
         is_cancelled: CancellationCheck | None = None,
         on_progress: CurrentRefreshProgressCallback | None = None,
+        on_history_progress: HistoryBackfillProgressCallback | None = None,
     ) -> CurrentRefreshResult:
         requested_keys = plan.refresh_keys
         self._validate_sparse_batches(plan, requested_keys)
@@ -171,7 +186,7 @@ class CurrentMarketRefreshExecutor:
                 raise ValueError("current refresh client factory returned the wrong region")
             request_plan = client.plan_price_requests(
                 group.item_ids,
-                cities=(group.city,),
+                cities=group.request_cities,
                 qualities=(group.quality,),
             )
             group_batch_counts.append(request_plan.batch_count)
@@ -189,6 +204,8 @@ class CurrentMarketRefreshExecutor:
         records_loaded = 0
         record_failures = 0
         cancelled = False
+        circuit_breaker_open = False
+        consecutive_group_failures = 0
         history_results: list[MissingSellHistoryBackfillResult] = []
 
         for planned_batch_number, group in enumerate(plan.batches, start=1):
@@ -197,7 +214,7 @@ class CurrentMarketRefreshExecutor:
                 break
             result = services[group.region].refresh(
                 group.item_ids,
-                cities=(group.city,),
+                cities=group.request_cities,
                 qualities=(group.quality,),
                 is_cancelled=is_cancelled,
             )
@@ -212,6 +229,10 @@ class CurrentMarketRefreshExecutor:
             records_loaded += result.records_returned
             record_failures += len(result.record_failures)
             cancelled = result.cancelled
+            if result.successful_batches:
+                consecutive_group_failures = 0
+            elif result.failed_batches:
+                consecutive_group_failures += 1
             if on_progress is not None:
                 on_progress(
                     CurrentRefreshProgress(
@@ -231,8 +252,11 @@ class CurrentMarketRefreshExecutor:
                 )
             if cancelled:
                 break
+            if consecutive_group_failures >= self.max_consecutive_group_failures:
+                circuit_breaker_open = True
+                break
 
-        if not cancelled and self.history_backfill is not None:
+        if not cancelled and not circuit_breaker_open and self.history_backfill is not None:
             sell_groups: dict[tuple[Region, str, int], list[str]] = {}
             for assessment in plan.assessments:
                 requirement = assessment.requirement
@@ -260,10 +284,13 @@ class CurrentMarketRefreshExecutor:
                     (city,),
                     quality=quality,
                     is_cancelled=is_cancelled,
+                    on_progress=on_history_progress,
                 )
                 history_results.append(history_result)
                 if history_result.cancelled:
                     cancelled = True
+                    break
+                if history_result.circuit_breaker_open:
                     break
 
         return CurrentRefreshResult(
@@ -288,6 +315,11 @@ class CurrentMarketRefreshExecutor:
             history_batches_planned=sum(value.batches_planned for value in history_results),
             history_batches_failed=sum(value.batches_failed for value in history_results),
             history_record_failures=sum(value.record_failures for value in history_results),
+            circuit_breaker_open=circuit_breaker_open,
+            groups_skipped=max(len(plan.batches) - groups_completed, 0),
+            history_circuit_breaker_open=any(
+                value.circuit_breaker_open for value in history_results
+            ),
         )
 
     @staticmethod
@@ -297,8 +329,9 @@ class CurrentMarketRefreshExecutor:
     ) -> None:
         expected = Counter(requested_keys)
         actual = Counter(
-            MarketKey(group.region, item_id, group.city, group.quality)
+            MarketKey(group.region, item_id, city, group.quality)
             for group in plan.batches
+            for city in group.request_cities
             for item_id in group.item_ids
         )
         if actual != expected:

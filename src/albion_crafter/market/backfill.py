@@ -44,6 +44,7 @@ class MissingSellHistoryBackfillResult:
     unresolved_keys: tuple[MissingSellKey, ...]
     refreshes: tuple[CachedHistoryRefreshResult, ...]
     cancelled: bool = False
+    circuit_breaker_open: bool = False
 
     @property
     def requested_count(self) -> int:
@@ -142,6 +143,7 @@ class MissingSellHistoryBackfillService:
 
         refreshes: list[CachedHistoryRefreshResult] = []
         cancelled = False
+        circuit_breaker_open = False
         active_cities = tuple(city for city in selected_cities if missing_by_city[city])
         for city_number, city in enumerate(active_cities, start=1):
             if is_cancelled is not None and is_cancelled():
@@ -212,7 +214,10 @@ class MissingSellHistoryBackfillService:
                 if refresh.cancelled:
                     cancelled = True
                     break
-            if cancelled:
+                if refresh.fetch.circuit_breaker_open:
+                    circuit_breaker_open = True
+                    break
+            if cancelled or circuit_breaker_open:
                 break
 
         resolved = self._resolved_history_keys(region, requested, resolution_time)
@@ -231,6 +236,7 @@ class MissingSellHistoryBackfillService:
             unresolved,
             tuple(refreshes),
             cancelled,
+            circuit_breaker_open,
         )
 
     def _missing_current_sell_ids(

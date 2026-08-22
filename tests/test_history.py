@@ -201,6 +201,32 @@ def test_history_partial_batch_failure_preserves_successes() -> None:
     assert result.failed_batches == 1
 
 
+def test_history_stops_after_repeated_endpoint_failures() -> None:
+    calls = 0
+
+    def transport(_url: str, _timeout: float) -> bytes:
+        nonlocal calls
+        calls += 1
+        raise URLError("endpoint offline")
+
+    result = AODPHistoryClient(
+        batch_size=1,
+        max_batches=3,
+        transport=transport,
+        retry_backoff_seconds=0,
+    ).fetch_history(
+        ["ONE", "TWO", "THREE"],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 8),
+        cities=["Bridgewatch"],
+    )
+
+    assert calls == 4
+    assert result.circuit_breaker_open
+    assert result.batch_count == 3
+    assert result.completed_batches == result.failed_batches == 2
+
+
 def test_history_batches_long_ids_by_complete_url_length() -> None:
     calls: list[str] = []
 

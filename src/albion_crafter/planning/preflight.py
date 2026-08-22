@@ -79,6 +79,13 @@ class PlannedAODPBatch:
     quality: int
     item_ids: tuple[str, ...]
     url_length_bytes: int
+    cities: tuple[str, ...] = ()
+
+    @property
+    def request_cities(self) -> tuple[str, ...]:
+        """Return every exact city covered by this rectangular request."""
+
+        return self.cities or (self.city,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,28 +977,55 @@ class FindMoneyPreflightPlanner:
 
 
 def _default_batch_planner(keys: tuple[MarketKey, ...]) -> tuple[PlannedAODPBatch, ...]:
-    grouped: dict[tuple, list[str]] = {}
+    grouped: dict[tuple[Region, int], dict[str, set[str]]] = {}
     for key in keys:
-        grouped.setdefault((key.region, key.city, key.quality), []).append(key.item_id)
+        by_item = grouped.setdefault((key.region, key.quality), {})
+        by_item.setdefault(key.item_id, set()).add(key.city)
+
+    # AODP accepts multiple locations in one request. Items requiring the exact
+    # same city set can therefore share a request without widening the sparse
+    # item/city key set into an unused cross product.
+    rectangles: list[tuple[Region, int, tuple[str, ...], tuple[str, ...]]] = []
+    for (region, quality), by_item in grouped.items():
+        items_by_cities: dict[tuple[str, ...], list[str]] = {}
+        for item_id, cities in by_item.items():
+            signature = tuple(sorted(cities, key=str.casefold))
+            items_by_cities.setdefault(signature, []).append(item_id)
+        for cities, item_ids in items_by_cities.items():
+            rectangles.append(
+                (
+                    region,
+                    quality,
+                    cities,
+                    tuple(sorted(item_ids)),
+                )
+            )
+
     result: list[PlannedAODPBatch] = []
-    for (region, city, quality), item_ids in sorted(
-        grouped.items(), key=lambda value: (value[0][0].value, value[0][1].casefold(), value[0][2])
+    for region, quality, cities, item_ids in sorted(
+        rectangles,
+        key=lambda value: (
+            value[0].value,
+            value[1],
+            tuple(city.casefold() for city in value[2]),
+            value[3],
+        ),
     ):
-        unique_ids = tuple(sorted(set(item_ids)))
         request_plan = plan_price_requests(
-            unique_ids,
+            item_ids,
             region=region,
-            cities=(city,),
+            cities=cities,
             qualities=(quality,),
         )
         for batch in request_plan.batches:
             result.append(
                 PlannedAODPBatch(
                     region=region,
-                    city=city,
+                    city=cities[0],
                     quality=quality,
                     item_ids=batch.item_ids,
                     url_length_bytes=batch.url_bytes,
+                    cities=cities,
                 )
             )
     return tuple(result)

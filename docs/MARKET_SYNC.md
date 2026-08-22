@@ -32,12 +32,15 @@ de-duplicated and placed into deterministic sequential batches with both limits 
 - no more than 100 canonical item IDs per request; and
 - no more than 3,900 bytes in the complete encoded URL.
 
-All selected cities are requested together when the URL bound permits it. There is no parallel
-fan-out and no request per item or city/item pair. HTTP 429 and transient failures use a bounded
-retry policy; permanent failures are reported. AODP publishes limits of 180 requests per minute
-and 300 per five minutes; the precomputed default full-sync request count stays comfortably below
-both for the current-order pass. Successful batches are merged and committed before the next
-batch. Cancellation stops before another request and keeps completed work.
+All selected cities are requested together when the URL bound permits it. Sparse planner refreshes
+likewise merge items that require the same exact city set, reducing HTTP calls without fetching an
+unrequested item/city cross-product. There is no parallel fan-out and no request per item or
+city/item pair. HTTP 429 and transient failures use a bounded retry policy; repeated endpoint-wide
+failures open a circuit breaker rather than retrying the entire remaining workload. AODP publishes
+limits of 180 requests per minute and 300 per five minutes; the precomputed default full-sync
+request count stays comfortably below both for the current-order pass. Successful batches are
+merged and committed before the next batch. Cancellation stops before another request and keeps
+completed work.
 
 After the current pass, the sync groups only missing current SELL keys by city and requests daily
 AODP history in the same bounded sequential batches. History remains in its own cache; the raw
@@ -72,6 +75,11 @@ including missing sides and rows with no usable current order.
 3. Run Find Me Money with a blank item search for broad Craft/Refine/Arbitrage discovery.
 4. The planner performs its existing sparse refresh only for exact required keys still missing or
    outside the selected freshness window.
+
+Find Me Money shows the current batch count during both current-price and missing-SELL-history
+work. Simple Mode exposes a Cancel button while the worker is active. If repeated connection
+failures open the circuit breaker, the planner skips the remaining network requests and continues
+from retained cache/history instead of appearing frozen.
 
 The Production Calculator remains targeted to one selected recipe. Craft Scanner consumes the
 same current and history caches and links to Royal Market Sync when zero actionable results are

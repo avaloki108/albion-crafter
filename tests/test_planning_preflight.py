@@ -198,8 +198,9 @@ def test_force_refresh_never_adds_optional_override_to_sparse_execution_keys(tmp
     assert not optional.needs_refresh
     assert optional.requirement.key not in preflight.market_refresh.refresh_keys
     planned_keys = {
-        (batch.region, item_id, batch.city, batch.quality)
+        (batch.region, item_id, city, batch.quality)
         for batch in preflight.market_refresh.batches
+        for city in batch.request_cities
         for item_id in batch.item_ids
     }
     assert planned_keys == {

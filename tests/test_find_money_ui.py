@@ -52,10 +52,11 @@ from albion_crafter.planning.preflight import (
     ObservationDisposition,
     PriceRequirementAssessment,
 )
-from albion_crafter.planning.service import FindMoneyService
+from albion_crafter.planning.service import FindMoneyService, PlanningProgress, PlanningStage
 from albion_crafter.ui.common import age_text
 from albion_crafter.ui.find_money import (
     MAX_INLINE_PRICE_OVERRIDES,
+    SIMPLE_MODE_OPTIMIZER_LIMITS,
     FindMoneyView,
     TrustPreset,
 )
@@ -79,6 +80,7 @@ class RecordingService:
         self.service = service
         self.preflight_calls = 0
         self.execute_calls = 0
+        self.last_execute_kwargs = None
 
     def preflight(self, constraints):
         self.preflight_calls += 1
@@ -86,6 +88,7 @@ class RecordingService:
 
     def execute(self, preflight, **kwargs):
         self.execute_calls += 1
+        self.last_execute_kwargs = kwargs
         return self.service.execute(preflight, **kwargs)
 
 
@@ -281,6 +284,8 @@ def test_page_is_idle_until_two_explicit_stages_and_renders_plan_and_history(
     _wait_until(qt_app, lambda: view._thread is None)
 
     assert recording.execute_calls == 1
+    assert recording.last_execute_kwargs is not None
+    assert recording.last_execute_kwargs["optimizer_limits"] == SIMPLE_MODE_OPTIMIZER_LIMITS
     assert view.displayed_snapshot is not None
     assert view.action_table.rowCount() > 0
     assert "PLAN STATUS" in view.plan_banner.text()
@@ -425,6 +430,8 @@ def test_cancellation_returns_page_to_usable_state(qt_app, tmp_path) -> None:
     assert not view.action_inputs.isEnabled()
     assert not view.core_inputs.isEnabled()
     assert not view.advanced_toggle.isEnabled()
+    assert not view.cancel_button.isHidden()
+    assert view.cancel_button.isEnabled()
 
     view.cancel_plan()
     _wait_until(qt_app, lambda: view._thread is None)
@@ -436,7 +443,34 @@ def test_cancellation_returns_page_to_usable_state(qt_app, tmp_path) -> None:
     assert view.advanced_toggle.isEnabled()
     assert view.preflight_button.isEnabled()
     assert not view.cancel_button.isEnabled()
+    assert view.cancel_button.isHidden()
     assert "cancelled safely" in view.status.text()
+    view.close()
+
+
+def test_simple_mode_shows_exact_network_batch_progress(qt_app, tmp_path) -> None:
+    service, snapshots, preferences, constraints = _stack(tmp_path)
+    view = FindMoneyView(
+        service,
+        snapshots,
+        preferences,
+        default_constraints=constraints,
+    )
+    worker = object()
+    view._worker = worker  # type: ignore[assignment]
+    progress = PlanningProgress(
+        PlanningStage.CURRENT_REFRESH,
+        "Current-price batches: 7 of 80 complete · 2 failed; saved prices retained.",
+        7,
+        80,
+    )
+
+    view._worker_progress(worker, progress)  # type: ignore[arg-type]
+
+    assert view.stage_label.text() == progress.message
+    assert view.status.text() == progress.message
+    assert view.progress.value() > 0
+    view._worker = None
     view.close()
 
 

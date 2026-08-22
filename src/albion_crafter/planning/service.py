@@ -248,12 +248,57 @@ class FindMoneyService:
                         progress,
                         PlanningStage.CURRENT_REFRESH,
                         f"Current-price batches: {value.batches_completed:,} of "
-                        f"{value.batches_planned:,} complete.",
+                        f"{value.batches_planned:,} complete"
+                        + (
+                            f" · {value.batches_failed:,} failed; saved prices retained."
+                            if value.batches_failed
+                            else "."
+                        ),
                         value.batches_completed,
                         value.batches_planned,
                     )
                 ),
+                on_history_progress=(
+                    None
+                    if progress is None
+                    else lambda value: self._report(
+                        progress,
+                        PlanningStage.CURRENT_REFRESH,
+                        "Missing-SELL history: "
+                        f"{value.city} · city {value.city_number:,}/{value.city_count:,} · "
+                        f"batch {value.batch_number:,}/{value.batch_count:,}.",
+                        round(
+                            1_000
+                            * (
+                                value.city_number
+                                - 1
+                                + value.batch_number / max(value.batch_count, 1)
+                            )
+                            / max(value.city_count, 1)
+                        ),
+                        1_000,
+                    )
+                ),
             )
+            if current_result.circuit_breaker_open:
+                self._report(
+                    progress,
+                    PlanningStage.CURRENT_REFRESH,
+                    "AODP stopped responding repeatedly; skipped "
+                    f"{current_result.groups_skipped:,} remaining batches and continuing with "
+                    "saved prices.",
+                    current_result.batches_completed,
+                    current_result.batches_planned,
+                )
+            elif current_result.history_circuit_breaker_open:
+                self._report(
+                    progress,
+                    PlanningStage.CURRENT_REFRESH,
+                    "AODP history stopped responding repeatedly; continuing with saved current "
+                    "prices and retained history.",
+                    current_result.batches_completed,
+                    current_result.batches_planned,
+                )
             if current_result.cancelled or self._cancelled(cancelled):
                 return self._cancelled_result(
                     started_at,
@@ -666,6 +711,26 @@ class FindMoneyService:
                             if current_result is not None
                             else 0
                         ),
+                    ),
+                    (
+                        "current_refresh_circuit_breaker_open",
+                        str(
+                            current_result.circuit_breaker_open
+                            if current_result is not None
+                            else False
+                        ).lower(),
+                    ),
+                    (
+                        "current_refresh_groups_skipped",
+                        str(current_result.groups_skipped if current_result is not None else 0),
+                    ),
+                    (
+                        "history_backfill_circuit_breaker_open",
+                        str(
+                            current_result.history_circuit_breaker_open
+                            if current_result is not None
+                            else False
+                        ).lower(),
                     ),
                     (
                         "pipeline_elapsed_seconds",
